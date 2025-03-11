@@ -308,7 +308,7 @@ const Play: NextPage = () => {
                       <li>Move left - A</li>
                       <li>Move Right - B</li>
                       <li>Jump - W</li>
-                      <li>End Jump Early - S</li>
+                      <li>Stop Jump - S</li>
                     </ul>
                   </div>
                 </div>
