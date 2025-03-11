@@ -7,9 +7,17 @@ import { Address } from "~~/components/scaffold-eth";
 import UsernameModal from "~~/components/UsernameModal";
 import dynamic from "next/dynamic";
 
+
 const MonadRunnerNoSSR = dynamic(
   () => import("~~/components/MonadRunner"),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
+   Loading uWu
+      </div>
+    ),
+  }
 );
 interface LeaderboardPlayer {
   rank: number;
@@ -52,7 +60,6 @@ const Play: NextPage = () => {
         console.error("Error fetching leaderboard:", error);
       } finally {
         setLoadingLeaderboard(false);
-        checkIfAllLoaded();
       }
     }
     fetchLeaderboard();
@@ -73,7 +80,6 @@ const Play: NextPage = () => {
         if (res.ok && data && data.data && data.data.user) {
           setUserStats(data.data.user);
         } else if (res.status === 404) {
-          // User not found - might be first time connecting
           console.log("New user - no stats yet");
         } else {
           console.error("Error fetching user stats:", data.error);
@@ -82,18 +88,17 @@ const Play: NextPage = () => {
         console.error("Error fetching user stats:", error);
       } finally {
         setLoadingUserStats(false);
-        checkIfAllLoaded();
       }
     }
     fetchUserStats();
   }, [connectedAddress]);
-
-  // Helper function to check if all data has loaded
-  const checkIfAllLoaded = () => {
+  useEffect(() => {
     if (!loadingLeaderboard && !loadingUserStats) {
       setIsLoading(false);
     }
-  };
+  }, [loadingLeaderboard, loadingUserStats]);
+  // Helper function to check if all data has loaded
+
 
   const handleStartGame = async () => {
     if (!connectedAddress) return;
@@ -221,43 +226,43 @@ const Play: NextPage = () => {
                 <Address address={connectedAddress} />
               </div>
             </div>
-
+  
             {isLoading && !gameStarted ? (
-              <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
-                <LoadingSpinner />
-              </div>
-            ) : gameStarted ? (
-              <MonadRunnerNoSSR 
-                walletAddress={connectedAddress}
-                username={userStats?.username || "Player"}
-                onGameEnd={handleGameEnd}
-                onClose={() => setGameStarted(false)}
-              />
-            ) : (
-              <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex flex-col items-center justify-center">
-                <div className="text-4xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-secondary to-accent">
-                  Monad Runner
-                </div>
-                <p className="mb-8 max-w-md text-center text-base-content/80">
-                  Navigate through the digital realm, avoid obstacles, and collect tokens to top the leaderboard!
-                </p>
-                <button
-                  onClick={handleStartGame}
-                  className="btn btn-secondary btn-lg shadow-neon hover:animate-glow"
-                  disabled={isLoading}
-                >
-                  {isLoading ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm"></span>
-                      Loading...
-                    </>
-                  ) : (
-                    "Start Game"
-                  )}
-                </button>
-              </div>
-            )}
-
+  <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
+    <LoadingSpinner />
+  </div>
+) : gameStarted ? (
+  <MonadRunnerNoSSR
+    walletAddress={connectedAddress}
+    username={userStats?.username || "Player"}
+    onGameEnd={handleGameEnd}
+    onClose={() => setGameStarted(false)}
+  />
+) : (
+  <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex flex-col items-center justify-center">
+    <div className="text-4xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-secondary to-accent">
+      Monad Runner
+    </div>
+    <p className="mb-8 max-w-md text-center text-base-content/80">
+      Navigate through the digital realm, avoid obstacles, and collect tokens to top the leaderboard!
+    </p>
+    <button
+      onClick={handleStartGame}
+      className="btn btn-secondary btn-lg shadow-neon hover:animate-glow"
+      disabled={isLoading}
+    >
+      {isLoading ? (
+        <>
+          <span className="loading loading-spinner loading-sm"></span>
+          Loading...
+        </>
+      ) : (
+        "Start Game"
+      )}
+    </button>
+  </div>
+)}
+  
             <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="stat bg-base-100/30 rounded-lg">
                 <div className="stat-title">Your Best</div>
@@ -270,7 +275,7 @@ const Play: NextPage = () => {
                 )}
                 <div className="stat-desc">Score</div>
               </div>
-
+  
               <div className="stat bg-base-100/30 rounded-lg">
                 <div className="stat-title">Global</div>
                 {loadingLeaderboard ? (
@@ -284,7 +289,7 @@ const Play: NextPage = () => {
                 )}
                 <div className="stat-desc">High Score</div>
               </div>
-
+  
               <div className="stat bg-base-100/30 rounded-lg">
                 <div className="stat-title">Your Rank</div>
                 {loadingUserStats ? (
@@ -301,7 +306,7 @@ const Play: NextPage = () => {
                 </div>
               </div>
             </div>
-
+  
             <div className="mt-6">
               <h3 className="text-xl font-bold mb-4">How to Play</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -316,7 +321,7 @@ const Play: NextPage = () => {
                     </ul>
                   </div>
                 </div>
-
+  
                 <div className="card bg-base-100/30">
                   <div className="card-body p-4">
                     <h4 className="card-title text-base text-secondary">Objective</h4>
@@ -327,7 +332,7 @@ const Play: NextPage = () => {
                     </ul>
                   </div>
                 </div>
-
+  
                 <div className="card bg-base-100/30">
                   <div className="card-body p-4">
                     <h4 className="card-title text-base text-accent">Scoring</h4>
@@ -341,11 +346,11 @@ const Play: NextPage = () => {
               </div>
             </div>
           </div>
-
+  
           {/* Leaderboard */}
           <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
             <h2 className="text-2xl font-bold mb-6 text-center text-accent">Leaderboard</h2>
-
+  
             {loadingLeaderboard ? (
               <div className="flex justify-center items-center p-8">
                 <div className="loading loading-spinner loading-md text-accent"></div>
@@ -353,18 +358,24 @@ const Play: NextPage = () => {
             ) : leaderboardData.length ? (
               <div className="space-y-3 mb-6">
                 {leaderboardData.map((player, index) => (
-                  <div 
-                    key={player.walletAddress} 
+                  <div
+                    key={player.walletAddress}
                     className={`flex items-center justify-between p-3 rounded-lg bg-base-100/30 ${
                       player.walletAddress === connectedAddress ? "border border-secondary" : ""
                     }`}
                   >
                     <div className="flex items-center gap-3">
-                      <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
-                        index === 0 ? "bg-yellow-500" : 
-                        index === 1 ? "bg-gray-300" : 
-                        index === 2 ? "bg-amber-700" : "bg-base-300"
-                      } text-base-100`}>
+                      <div
+                        className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
+                          index === 0
+                            ? "bg-yellow-500"
+                            : index === 1
+                            ? "bg-gray-300"
+                            : index === 2
+                            ? "bg-amber-700"
+                            : "bg-base-300"
+                        } text-base-100`}
+                      >
                         {index + 1}
                       </div>
                       <div className="text-sm truncate w-20">
@@ -378,9 +389,9 @@ const Play: NextPage = () => {
             ) : (
               <p className="text-center">No leaderboard data available.</p>
             )}
-
+  
             <div className="divider">Recent Games</div>
-
+  
             <div className="space-y-2 mb-6">
               {recentGames.length > 0 ? (
                 recentGames.map((game, index) => (
@@ -404,9 +415,9 @@ const Play: NextPage = () => {
                 ))
               )}
             </div>
-
+  
             <div className="text-center">
-              <button 
+              <button
                 className="btn btn-outline btn-secondary btn-sm"
                 onClick={() => setGameStarted(false)}
               >
@@ -426,7 +437,7 @@ const Play: NextPage = () => {
           </div>
         </div>
       )}
-
+  
       {/* Username Modal */}
       {showUsernameModal && connectedAddress && (
         <UsernameModal
@@ -435,7 +446,7 @@ const Play: NextPage = () => {
           onCancel={() => setShowUsernameModal(false)}
         />
       )}
-
+  
       {/* Global loading overlay for major operations */}
       {isLoading && gameStarted && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
