@@ -130,7 +130,7 @@ const Home: NextPage = () => {
             <h2 className="text-3xl font-bold mb-6 text-base-content/90">Top Players</h2>
             
             <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
-              {leaderboard.map((player) => (
+            {leaderboard.map((player: LeaderboardPlayer, index: number) => (
                 <div key={player.rank} className="flex items-center justify-between p-3 mb-2 rounded-lg bg-base-100/30">
                   <div className="flex items-center gap-3">
                     <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${

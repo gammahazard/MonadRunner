@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 const API_KEY = process.env.API_KEY;
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.gummybera.com';
 
