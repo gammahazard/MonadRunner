@@ -4,9 +4,13 @@ import { useEffect, useState } from "react";
 import type { NextPage } from "next";
 import { useAccount } from "wagmi";
 import { Address } from "~~/components/scaffold-eth";
-import MonadRunner from "~~/components/MonadRunner";
 import UsernameModal from "~~/components/UsernameModal";
+import dynamic from "next/dynamic";
 
+const MonadRunnerNoSSR = dynamic(
+  () => import("~~/components/MonadRunner"),
+  { ssr: false }
+);
 interface LeaderboardPlayer {
   rank: number;
   walletAddress: string;
@@ -223,7 +227,7 @@ const Play: NextPage = () => {
                 <LoadingSpinner />
               </div>
             ) : gameStarted ? (
-              <MonadRunner 
+              <MonadRunnerNoSSR 
                 walletAddress={connectedAddress}
                 username={userStats?.username || "Player"}
                 onGameEnd={handleGameEnd}
