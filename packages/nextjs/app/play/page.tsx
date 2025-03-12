@@ -1,4 +1,3 @@
-// monad-app/pages/play.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -45,7 +44,9 @@ interface ReplayData {
 }
 
 const Play: NextPage = () => {
+  // Always call hooks in the same order:
   const { address: connectedAddress } = useAccount();
+  const [mounted, setMounted] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [showUsernameModal, setShowUsernameModal] = useState(false);
   const [showReplayModal, setShowReplayModal] = useState(false);
@@ -56,6 +57,11 @@ const Play: NextPage = () => {
   const [recentGames, setRecentGames] = useState<{ time: string; score: number }[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedReplay, setSelectedReplay] = useState<ReplayData | null>(null);
+
+  // Set mounted flag once on client (runs after first render)
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Load leaderboard data
   useEffect(() => {
@@ -135,9 +141,7 @@ const Play: NextPage = () => {
     try {
       const res = await fetch("/api/game/score", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           walletAddress: connectedAddress,
           score,
@@ -145,7 +149,7 @@ const Play: NextPage = () => {
       });
       const data = await res.json();
       if (res.ok) {
-        setRecentGames(prevGames => {
+        setRecentGames((prevGames) => {
           const newGames = [{ time: "just now", score }, ...prevGames.slice(0, 4)];
           return newGames;
         });
@@ -174,15 +178,15 @@ const Play: NextPage = () => {
     setIsLoading(true);
     if (connectedAddress) {
       fetch(`/api/game/user/${connectedAddress}/stats`)
-        .then(res => res.json())
-        .then(data => {
+        .then((res) => res.json())
+        .then((data) => {
           if (data?.data?.user) {
             setUserStats(data.data.user);
           }
           setGameStarted(true);
           setIsLoading(false);
         })
-        .catch(error => {
+        .catch((error) => {
           console.error("Error refreshing user stats:", error);
           setGameStarted(true);
           setIsLoading(false);
@@ -198,17 +202,20 @@ const Play: NextPage = () => {
     setSelectedReplay(replay);
     setShowReplayModal(false);
   };
+
   const handleReplayClose = () => {
     setSelectedReplay(null);
     setShowReplayModal(true); // Reopen the replay modal when closing a replay
   };
+
   const LoadingSpinner = () => (
     <div className="flex justify-center items-center w-full h-full min-h-[200px]">
       <div className="loading loading-spinner loading-lg text-secondary"></div>
     </div>
   );
 
-  return (
+  // Render UI only when mounted; hooks are always called
+  return mounted ? (
     <div className="flex items-center flex-col flex-grow pt-10 pb-16">
       {connectedAddress ? (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 w-full max-w-6xl px-4">
@@ -220,7 +227,7 @@ const Play: NextPage = () => {
                 <Address address={connectedAddress} />
               </div>
             </div>
-  
+
             {isLoading && !gameStarted && !selectedReplay ? (
               <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
                 <LoadingSpinner />
@@ -228,29 +235,26 @@ const Play: NextPage = () => {
             ) : selectedReplay ? (
               // Show replay component when a replay is selected
               <div className="relative">
-                {/* Use dynamic import for the Replay component */}
                 {(() => {
                   const ReplayComponent = dynamic(
                     () => import("~~/components/Replay"),
                     {
                       ssr: false,
-                      loading: () => <LoadingSpinner />
+                      loading: () => <LoadingSpinner />,
                     }
                   );
-                  
                   return (
-                    <ReplayComponent 
-                    replayData={selectedReplay.replayData} 
-                    onScoreUpdate={(score) => console.log("Replay score update:", score)}
-                    onClose={handleReplayClose} // Use the new handler
-                  />
+                    <ReplayComponent
+                      replayData={selectedReplay.replayData}
+                      onScoreUpdate={(score) => console.log("Replay score update:", score)}
+                      onClose={handleReplayClose}
+                    />
                   );
                 })()}
-                
-             
                 <div className="text-center mt-6">
                   <p className="text-sm opacity-80">
-                    Replay of {selectedReplay.username || selectedReplay.walletAddress}'s run with score: {selectedReplay.score}
+                    Replay of {selectedReplay.username || selectedReplay.walletAddress}'s run with score:{" "}
+                    {selectedReplay.score}
                   </p>
                 </div>
               </div>
@@ -285,25 +289,25 @@ const Play: NextPage = () => {
                 </button>
               </div>
             )}
-  
+
             {/* Replay buttons for My Games and All Games */}
             <div className="text-center mt-6 flex justify-center gap-4">
-            <div className="text-center mt-6">
-              <button
-                className="btn btn-outline btn-secondary btn-sm"
-                onClick={() => {
-                  setSelectedReplay(null); // Clear any selected replay
-                  setShowReplayModal(true);
-                  // Default to user's games if they have a wallet connected
-                  localStorage.setItem('replayFilter', connectedAddress ? 'user' : 'all');
-                }}
-              >
-                View Games
-              </button>
-            </div>
+              <div className="text-center mt-6">
+                <button
+                  className="btn btn-outline btn-secondary btn-sm"
+                  onClick={() => {
+                    setSelectedReplay(null); // Clear any selected replay
+                    setShowReplayModal(true);
+                    // Default to user's games if they have a wallet connected
+                    localStorage.setItem("replayFilter", connectedAddress ? "user" : "all");
+                  }}
+                >
+                  View Games
+                </button>
+              </div>
             </div>
           </div>
-  
+
           {/* Leaderboard and Stats Section */}
           <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
             <div className="mb-6">
@@ -347,9 +351,9 @@ const Play: NextPage = () => {
                 </div>
               </div>
             </div>
-  
+
             <div className="divider">Recent Games</div>
-  
+
             <div className="space-y-2 mb-6">
               {recentGames.length > 0 ? (
                 recentGames.map((game, index) => (
@@ -386,7 +390,7 @@ const Play: NextPage = () => {
           </div>
         </div>
       )}
-  
+
       {/* Username Modal */}
       {showUsernameModal && connectedAddress && (
         <UsernameModal
@@ -395,7 +399,7 @@ const Play: NextPage = () => {
           onCancel={() => setShowUsernameModal(false)}
         />
       )}
-  
+
       {/* Global loading overlay for major operations */}
       {isLoading && gameStarted && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -405,7 +409,7 @@ const Play: NextPage = () => {
           </div>
         </div>
       )}
-  
+
       {/* Replay List Modal */}
       {showReplayModal && connectedAddress && (
         <ReplayListModal
@@ -415,6 +419,9 @@ const Play: NextPage = () => {
         />
       )}
     </div>
+  ) : (
+    // While not mounted, render a fallback (could be a loading spinner)
+    <div />
   );
 };
 

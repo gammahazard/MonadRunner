@@ -116,7 +116,7 @@ const Replay: React.FC<ReplayProps> = ({ replayData, onScoreUpdate, onClose }) =
       animFrameRef.current = null;
     }
     
-    const startTime = performance.now();
+    const startTime = typeof performance !== 'undefined' ? performance.now() : 0;
     let eventIndex = 0;
     let lastScore = 0;
     
