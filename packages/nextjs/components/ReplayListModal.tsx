@@ -1,8 +1,12 @@
 // monad-app/packages/nextjs/components/ReplayListModal.tsx
 "use client";
 import React, { useEffect, useState } from "react";
-import Replay from "./Replay"; // Updated import path to match your structure
+import dynamic from "next/dynamic";
 
+const ReplayNoSSR = dynamic(() => import("./Replay"), {
+  ssr: false,
+  loading: () => <div>Loading Replay...</div>,
+});
 interface Replay {
   walletAddress: string;
   username?: string;
@@ -207,7 +211,7 @@ const ReplayListModal: React.FC<ReplayListModalProps> = ({
               Replay
             </h3>
             <div className="mb-4 h-96 relative">
-              <Replay 
+              <ReplayNoSSR 
                 replayData={selectedReplay.replayData} 
                 onScoreUpdate={handleReplayScoreUpdate}
                 onClose={handleReplayClose}
