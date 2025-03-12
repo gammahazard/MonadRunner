@@ -1,5 +1,7 @@
 // app/api/game/replays/route.ts
 import { NextRequest, NextResponse } from "next/server";
+export const revalidate = 0;
+
 
 const API_KEY = process.env.API_KEY;
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.gummybera.com";
