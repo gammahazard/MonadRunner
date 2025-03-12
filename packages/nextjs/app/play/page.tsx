@@ -1,14 +1,15 @@
 "use client";
+export const dynamic = "force-dynamic";
 
 import { useEffect, useState } from "react";
 import type { NextPage } from "next";
 import { useAccount } from "wagmi";
 import { Address } from "~~/components/scaffold-eth";
 import UsernameModal from "~~/components/UsernameModal";
-import dynamic from "next/dynamic";
+import dynamicImport from "next/dynamic";
 import ReplayListModal from "~~/components/ReplayListModal";
 
-const MonadRunnerNoSSR = dynamic(() => import("~~/components/MonadRunner"), {
+const MonadRunnerNoSSR = dynamicImport(() => import("~~/components/MonadRunner"), {
   ssr: false,
   loading: () => (
     <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
@@ -239,7 +240,7 @@ const Play: NextPage = () => {
                   // Show replay component when a replay is selected
                   <div className="relative">
                     {(() => {
-                      const ReplayComponent = dynamic(() => import("~~/components/Replay"), {
+                      const ReplayComponent = dynamicImport(() => import("~~/components/Replay"), {
                         ssr: false,
                         loading: () => <LoadingSpinner />,
                       });
