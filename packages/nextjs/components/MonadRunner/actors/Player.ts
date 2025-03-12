@@ -1,24 +1,44 @@
-// monad-app/packages/nextjs/components/MonadRunner/actors/Player.ts
 import * as ex from "excalibur";
 
 export class Player extends ex.Actor {
-  // Make isOnGround publicly accessible
-  public isOnGround: boolean = false;
+  public isOnGround = false;
 
   constructor() {
     super({
       pos: new ex.Vector(150, 375),
-      width: 25,
-      height: 25,
-      color: ex.Color.fromHex("#4cc9f0"),
+      width: 50,
+      height: 50,
       collisionType: ex.CollisionType.Active,
     });
-
     // Enable gravity
     this.body.useGravity = true;
   }
 
-  // Jump method
+  onInitialize(engine: ex.Engine): void {
+    // Instead of a sprite, we'll use a blue rectangle
+    this.graphics.use(
+      new ex.Rectangle({
+        width: this.width,
+        height: this.height,
+        color: ex.Color.Blue,
+      })
+    );
+
+    this.on("collisionstart", evt => {
+      if (this.isBottomCollision(evt.other)) {
+        this.isOnGround = true;
+        console.log("Player touched ground");
+      }
+    });
+
+    this.on("collisionend", evt => {
+      if (this.isBottomCollision(evt.other)) {
+        this.isOnGround = false;
+        console.log("Player left ground");
+      }
+    });
+  }
+
   public jump(): void {
     if (this.isOnGround) {
       this.vel = new ex.Vector(0, -400);
@@ -29,7 +49,6 @@ export class Player extends ex.Actor {
     }
   }
 
-  // Quick fall method
   public quickFall(): void {
     if (!this.isOnGround && this.vel.y < 0) {
       this.vel = new ex.Vector(this.vel.x, 200);
@@ -37,38 +56,28 @@ export class Player extends ex.Actor {
     }
   }
 
-  // Setup collision events
-  onInitialize(engine: ex.Engine): void {
-    this.on('collisionstart', (evt: ex.CollisionStartEvent) => {
-      if (this.isBottomCollision(evt.other)) {
-        this.isOnGround = true;
-        console.log("Player touched ground");
-      }
-    });
-    this.on('collisionend', (evt: ex.CollisionEndEvent) => {
-      if (this.isBottomCollision(evt.other)) {
-        this.isOnGround = false;
-        console.log("Player left ground");
-      }
-    });
-  }
-
   private isBottomCollision(other: ex.Collider): boolean {
     const playerBottom = this.pos.y + this.height / 2;
     let otherTop: number;
+
     if (other instanceof ex.Actor) {
       otherTop = other.pos.y - other.height / 2;
     } else {
       const owner = other.owner;
       if (owner) {
-        otherTop = owner.get(ex.TransformComponent)?.pos.y - (owner.get(ex.TransformComponent)?.scale.y || 0) / 2 || 0;
+        const transform = owner.get(ex.TransformComponent);
+        const scaleY = transform?.scale.y ?? 0;
+        otherTop = transform?.pos.y! - scaleY / 2;
       } else {
         otherTop = other.bounds.top;
       }
     }
+
     const isGround = Math.abs(playerBottom - otherTop) < 5;
     const isLanding = this.vel.y >= -10 && isGround;
-    if (isLanding) console.log("Ground collision detected");
+    if (isLanding) {
+      console.log("Ground collision detected");
+    }
     return isLanding;
   }
 }
