@@ -1,22 +1,20 @@
-// components/MonadRunner/actors/Obstacle.ts
+// monad-app/packages/nextjs/components/MonadRunner/actors/Obstacle.ts
 import * as ex from "excalibur";
 
 export class Obstacle extends ex.Actor {
-  constructor(x: number, y: number, height: number) {
+  constructor(x: number, y: number) {
     super({
       pos: new ex.Vector(x, y),
       width: 30,
-      height,
-      color: ex.Color.fromHex("#f72585"),
+      height: 30,
+      color: ex.Color.Red, // Red square for obstacles
       collisionType: ex.CollisionType.Fixed,
+      z: 1, // Draw above the ground
     });
   }
 
   onInitialize(engine: ex.Engine): void {
-    // Move obstacle from right to left
-    this.actions.moveTo(new ex.Vector(-50, this.pos.y), 200);
-    
-    // Remove when off-screen
+    // Remove the obstacle when it leaves the viewport
     this.on("exitviewport", () => {
       this.kill();
     });

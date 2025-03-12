@@ -1,9 +1,11 @@
-// components/MonadRunner/index.tsx
+// monad-app/packages/nextjs/components/MonadRunner/index.tsx
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
 import * as ex from "excalibur";
-import { Player } from "./actors/Player";
+import { GameScene } from "./GameScene";
+import GameOver from "./components/GameOver";
+import { ReplayEvent } from "./ReplayComponent";
 
 interface MonadRunnerProps {
   walletAddress: string;
@@ -12,32 +14,134 @@ interface MonadRunnerProps {
   onClose: () => void;
 }
 
-const MonadRunner: React.FC<MonadRunnerProps> = ({ 
-  walletAddress, 
-  username = "Player", 
-  onGameEnd, 
-  onClose 
+const MonadRunner: React.FC<MonadRunnerProps> = ({
+  walletAddress,
+  username = "Player",
+  onGameEnd,
+  onClose,
 }) => {
   const gameCanvasRef = useRef<HTMLDivElement>(null);
-  const [score, setScore] = useState(0);
   const engineRef = useRef<ex.Engine | null>(null);
-  const playerRef = useRef<Player | null>(null);
-  
-  // Initialize and start the game
+  const gameSceneRef = useRef<GameScene | null>(null);
+  const [gameOver, setGameOver] = useState(false);
+  const [score, setScore] = useState(0);
+  const [replayData, setReplayData] = useState<ReplayEvent[]>([]);
+
+  // Listen for the "gameover" event and call onGameEnd with final score.
+  useEffect(() => {
+    const handleGameOver = () => {
+      console.log("[MonadRunner] Game over with score:", score);
+      setGameOver(true);
+      onGameEnd(score);
+    };
+    window.addEventListener("gameover", handleGameOver);
+    return () => {
+      window.removeEventListener("gameover", handleGameOver);
+    };
+  }, [onGameEnd, score]);
+
+  // Listen for token collection events using functional updates.
+  useEffect(() => {
+    const handleTokenCollected = (evt: CustomEvent) => {
+      setScore((prevScore) => {
+        const newScore = prevScore + (evt.detail?.points || 0);
+        console.log("[MonadRunner] Token collected! New score:", newScore);
+        return newScore;
+      });
+    };
+    window.addEventListener("tokencollected", handleTokenCollected as EventListener);
+    return () => {
+      window.removeEventListener("tokencollected", handleTokenCollected as EventListener);
+    };
+  }, []);
+
+  // Listen for score increment events using functional updates.
+  useEffect(() => {
+    const handleScoreIncrement = (evt: CustomEvent) => {
+      setScore((prevScore) => {
+        const newScore = prevScore + (evt.detail?.points || 0);
+        console.log("[MonadRunner] Score incremented! New score:", newScore);
+        return newScore;
+      });
+    };
+    window.addEventListener("scoreincrement", handleScoreIncrement as EventListener);
+    return () => {
+      window.removeEventListener("scoreincrement", handleScoreIncrement as EventListener);
+    };
+  }, []);
+
+  // Listen for replay data event and submit it to the backend.
+  useEffect(() => {
+    const handleReplayData = async (evt: CustomEvent) => {
+      const replay = evt.detail?.replay;
+      if (!replay) {
+        console.error("[MonadRunner] No replay data in event:", evt);
+        return;
+      }
+      
+      console.log(`[MonadRunner] Replay data received: ${replay.length} events for score ${score}`);
+      setReplayData(replay);
+      
+      try {
+        // Create the request body
+        const requestBody = { 
+          walletAddress, 
+          score, 
+          replayData: replay 
+        };
+        
+        console.log("[MonadRunner] Submitting replay data to server...");
+        console.log("[MonadRunner] Request body:", JSON.stringify(requestBody).substring(0, 200) + '...');
+        
+        const response = await fetch("/api/game/replay", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+        
+        console.log(`[MonadRunner] Replay submission response status: ${response.status}`);
+        
+        if (!response.ok) {
+          throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        console.log("[MonadRunner] Replay data submitted successfully:", result);
+        
+        // After submitting replay, check if it's in the database
+        setTimeout(async () => {
+          try {
+            const checkResponse = await fetch(`/api/game/replay/${walletAddress}`);
+            const checkData = await checkResponse.json();
+            console.log("[MonadRunner] Verification - User replays:", checkData);
+          } catch (verifyError) {
+            console.error("[MonadRunner] Error verifying replay was saved:", verifyError);
+          }
+        }, 1000);
+      } catch (error) {
+        console.error("[MonadRunner] Error submitting replay data:", error);
+      }
+    };
+
+    window.addEventListener("replaydata", handleReplayData as EventListener);
+    return () => {
+      window.removeEventListener("replaydata", handleReplayData as EventListener);
+    };
+  }, [walletAddress, score]);
+
+  // Set up game engine
   useEffect(() => {
     if (!gameCanvasRef.current) {
-      console.error("Game canvas ref is null");
+      console.error("[MonadRunner] Game canvas ref is null");
       return;
     }
-
-    console.log("Starting to initialize game...");
-
-    // Clear any existing canvas elements
+    
+    // Clear any previous canvas elements
     while (gameCanvasRef.current.firstChild) {
       gameCanvasRef.current.removeChild(gameCanvasRef.current.firstChild);
     }
-
-    // Create a canvas element and add it to our container
+    
+    // Create new canvas
     const canvasElement = document.createElement("canvas");
     canvasElement.width = 800;
     canvasElement.height = 450;
@@ -46,181 +150,71 @@ const MonadRunner: React.FC<MonadRunnerProps> = ({
     canvasElement.style.display = "block";
     gameCanvasRef.current.appendChild(canvasElement);
 
-    // Initialize Excalibur engine with global physics settings
+    // Create game engine
     const engine = new ex.Engine({
       width: 800,
       height: 450,
-      canvasElement: canvasElement,
+      canvasElement,
       backgroundColor: ex.Color.fromHex("#1a1a2e"),
-      physics: {
-        gravity: new ex.Vector(0, 800)
-      }
+      physics: { gravity: new ex.Vector(0, 800) },
     });
-    
     engineRef.current = engine;
-    
-    // Create a simple game scene
-    const gameScene = new ex.Scene();
-    
-    // Define ground level
-    const groundY = 400;
-    
-    // Create ground
-    const ground = new ex.Actor({
-      name: "ground", // Give it a name for debugging
-      pos: new ex.Vector(400, groundY),
-      width: 800,
-      height: 50,
-      color: ex.Color.fromHex("#7209b7"),
-      collisionType: ex.CollisionType.Fixed, // Fixed so it doesn't move
-    });
-    
-    // Create player instance
-    const player = new Player();
-    player.pos = new ex.Vector(200, groundY - 25); // Position directly above ground
-    
-    // Store reference to player
-    playerRef.current = player;
-    
-    // Add a debug flag to check if jump key was pressed
-    let jumpKeyPressed = false;
-    
-    // Setup keyboard controls
-    engine.input.keyboard.on("press", (evt) => {
-      // Jump with W
-      if (evt.key === ex.Keys.W) {
-        jumpKeyPressed = true;
-        console.log('W key pressed, player.isOnGround:', player.isOnGround);
-        player.jump();
-      }
-      
-      // Quick fall with S
-      if (evt.key === ex.Keys.S) {
-        player.quickFall();
-      }
-    });
-    
-    // Reset jump key flag after update
-    gameScene.on("postupdate", () => {
-      if (jumpKeyPressed) {
-        jumpKeyPressed = false;
-      }
-    });
-    
-    // Movement with A/D
-    engine.input.keyboard.on("hold", (evt) => {
-      // Handle A/D movement
-      if (evt.key === ex.Keys.A || evt.key === ex.Keys.Left) {
-        player.vel.x = -200;
-      }
-      
-      if (evt.key === ex.Keys.D || evt.key === ex.Keys.Right) {
-        player.vel.x = 200;
-      }
-    });
-    
-    // Reset velocity when keys are released
-    engine.input.keyboard.on("release", (evt) => {
-      if ((evt.key === ex.Keys.A || evt.key === ex.Keys.Left) && player.vel.x < 0) {
-        player.vel.x = 0;
-      }
-      
-      if ((evt.key === ex.Keys.D || evt.key === ex.Keys.Right) && player.vel.x > 0) {
-        player.vel.x = 0;
-      }
-    });
-    
-    // Update game state each frame - use the elapsed parameter instead of delta
-    gameScene.on("preupdate", (evt: any) => {
-      // Get elapsed time from event
-      const elapsed = evt.elapsed || 16; // Default to 16ms if not available
-      
-      // Debug information
-      if (player.isOnGround) {
-        console.log("Player is on ground");
-      }
-      
-      // Manually check if player is on ground by position
-      const playerBottom = player.pos.y + player.height / 2;
-      const groundTop = ground.pos.y - ground.height / 2;
-      if (Math.abs(playerBottom - groundTop) < 5 && player.vel.y >= 0) {
-        // If player is near ground and not moving up, force on-ground state
-        player.isOnGround = true;
-      }
-      
-      // Keep player within game bounds
-      if (player.pos.x < 15) {
-        player.pos.x = 15;
-      }
-      if (player.pos.x > 785) {
-        player.pos.x = 785;
-      }
-      
-      // Update score based on time - use elapsed instead of delta
-      if (elapsed > 0) {
-        const scoreIncrement = elapsed / 1000;
-        setScore(prevScore => Math.floor(prevScore + scoreIncrement));
-      }
-    });
-    
-    // Add actors to scene
-    gameScene.add(ground);
-    gameScene.add(player);
-    
-    // Add scene to game and activate it
+
+    // Set up game scene
+    const gameScene = new GameScene(false); // false = not replay mode
+    gameSceneRef.current = gameScene;
     engine.add("game", gameScene);
     engine.goToScene("game");
-    
-    // Enable debug drawing to see collision boundaries
-    engine.showDebug(true);
-    
-    // Start the game engine
-    engine.start().then(() => {
-      console.log("Engine started successfully!");
-    }).catch(error => {
-      console.error("Error starting engine:", error);
-    });
 
-    // Cleanup function
+    // For debugging
+    engine.showDebug(true);
+
+    // Start the engine
+    engine.start()
+      .then(() => {
+        console.log("[MonadRunner] Engine started successfully!");
+      })
+      .catch((error) => {
+        console.error("[MonadRunner] Error starting engine:", error);
+      });
+
+    // Clean up on unmount
     return () => {
       if (engineRef.current) {
+        console.log("[MonadRunner] Stopping engine on cleanup");
         engineRef.current.stop();
         engineRef.current = null;
       }
     };
   }, [walletAddress]);
 
+  const handleRestart = () => {
+    setGameOver(false);
+    onClose();
+  };
+
   return (
     <div className="relative w-full aspect-[16/9] bg-base-300/50 rounded-lg overflow-hidden">
-      <div 
-        ref={gameCanvasRef} 
-        className="absolute inset-0"
-      ></div>
-      
-      {/* Username display */}
+      <div ref={gameCanvasRef} className="absolute inset-0"></div>
       <div className="absolute top-5 left-5 glass p-2 rounded-lg z-10 flex items-center space-x-2">
         <div className="w-6 h-6 bg-primary rounded-full flex items-center justify-center text-base-100 text-xs font-bold">
           {username.charAt(0).toUpperCase()}
         </div>
         <span className="font-mono text-sm">{username}</span>
       </div>
-      
-      {/* Score display */}
       <div className="absolute top-5 right-16 glass p-2 rounded-lg">
         <span className="font-mono">Score: {score}</span>
       </div>
-      
       <button
         onClick={onClose}
         className="absolute top-5 right-5 btn btn-sm btn-circle btn-outline"
       >
         ✕
       </button>
-      
-      {/* Debug instructions */}
       <div className="absolute bottom-5 right-5 glass p-2 rounded-lg text-xs">
         <p>Controls: A/D to move, W to jump, S to drop</p>
       </div>
+      {gameOver && <GameOver finalScore={score} onRestart={handleRestart} />}
     </div>
   );
 };

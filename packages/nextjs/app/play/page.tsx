@@ -1,3 +1,4 @@
+// monad-app/pages/play.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -6,7 +7,7 @@ import { useAccount } from "wagmi";
 import { Address } from "~~/components/scaffold-eth";
 import UsernameModal from "~~/components/UsernameModal";
 import dynamic from "next/dynamic";
-
+import ReplayListModal from "~~/components/ReplayListModal";
 
 const MonadRunnerNoSSR = dynamic(
   () => import("~~/components/MonadRunner"),
@@ -14,11 +15,12 @@ const MonadRunnerNoSSR = dynamic(
     ssr: false,
     loading: () => (
       <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
-   Loading uWu
+        Loading uWu
       </div>
     ),
   }
 );
+
 interface LeaderboardPlayer {
   rank: number;
   walletAddress: string;
@@ -34,16 +36,26 @@ interface UserStats {
   rank: number;
 }
 
+interface ReplayData {
+  walletAddress: string;
+  username?: string;
+  score: number;
+  replayData: any[];
+  playedAt: string;
+}
+
 const Play: NextPage = () => {
   const { address: connectedAddress } = useAccount();
   const [gameStarted, setGameStarted] = useState(false);
   const [showUsernameModal, setShowUsernameModal] = useState(false);
+  const [showReplayModal, setShowReplayModal] = useState(false);
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardPlayer[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(true);
   const [userStats, setUserStats] = useState<UserStats | null>(null);
   const [loadingUserStats, setLoadingUserStats] = useState(false);
   const [recentGames, setRecentGames] = useState<{ time: string; score: number }[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedReplay, setSelectedReplay] = useState<ReplayData | null>(null);
 
   // Load leaderboard data
   useEffect(() => {
@@ -51,7 +63,7 @@ const Play: NextPage = () => {
       try {
         const res = await fetch("/api/game/leaderboard?limit=10");
         const data = await res.json();
-        if (res.ok && data && data.data && data.data.leaderboard) {
+        if (res.ok && data?.data?.leaderboard) {
           setLeaderboardData(data.data.leaderboard);
         } else {
           console.error("Error fetching leaderboard:", data.error);
@@ -72,12 +84,11 @@ const Play: NextPage = () => {
         setIsLoading(false);
         return;
       }
-      
       setLoadingUserStats(true);
       try {
         const res = await fetch(`/api/game/user/${connectedAddress}/stats`);
         const data = await res.json();
-        if (res.ok && data && data.data && data.data.user) {
+        if (res.ok && data?.data?.user) {
           setUserStats(data.data.user);
         } else if (res.status === 404) {
           console.log("New user - no stats yet");
@@ -92,34 +103,26 @@ const Play: NextPage = () => {
     }
     fetchUserStats();
   }, [connectedAddress]);
+
   useEffect(() => {
     if (!loadingLeaderboard && !loadingUserStats) {
       setIsLoading(false);
     }
   }, [loadingLeaderboard, loadingUserStats]);
-  // Helper function to check if all data has loaded
-
 
   const handleStartGame = async () => {
     if (!connectedAddress) return;
-    
     setIsLoading(true);
-    
-    // Check if user has a username
     try {
       const res = await fetch(`/api/game/user/${connectedAddress}/stats`);
       const data = await res.json();
-      
       if (res.ok && data?.data?.user?.username) {
-        // User has a username, start the game
         setGameStarted(true);
       } else {
-        // User needs to set a username first
         setShowUsernameModal(true);
       }
     } catch (error) {
       console.error("Error checking username:", error);
-      // In case of error, try to start the game anyway
       setGameStarted(true);
     } finally {
       setIsLoading(false);
@@ -128,11 +131,8 @@ const Play: NextPage = () => {
 
   const handleGameEnd = async (score: number) => {
     if (!connectedAddress) return;
-    
     setIsLoading(true);
-    
     try {
-      // Submit the score
       const res = await fetch("/api/game/score", {
         method: "POST",
         headers: {
@@ -143,32 +143,20 @@ const Play: NextPage = () => {
           score,
         }),
       });
-      
       const data = await res.json();
-      
       if (res.ok) {
-        // Update recent games
         setRecentGames(prevGames => {
-          const newGames = [
-            { time: "just now", score },
-            ...prevGames.slice(0, 4) // Keep only the 5 most recent
-          ];
+          const newGames = [{ time: "just now", score }, ...prevGames.slice(0, 4)];
           return newGames;
         });
-        
-        // Refresh user stats
         const statsRes = await fetch(`/api/game/user/${connectedAddress}/stats`);
         const statsData = await statsRes.json();
-        
         if (statsRes.ok && statsData?.data?.user) {
           setUserStats(statsData.data.user);
         }
-        
-        // Refresh leaderboard if score was high
         if (data?.data?.isHighScore) {
           const leaderboardRes = await fetch("/api/game/leaderboard?limit=10");
           const leaderboardData = await leaderboardRes.json();
-          
           if (leaderboardRes.ok && leaderboardData?.data?.leaderboard) {
             setLeaderboardData(leaderboardData.data.leaderboard);
           }
@@ -184,8 +172,6 @@ const Play: NextPage = () => {
   const handleUsernameComplete = () => {
     setShowUsernameModal(false);
     setIsLoading(true);
-    
-    // Refresh user stats
     if (connectedAddress) {
       fetch(`/api/game/user/${connectedAddress}/stats`)
         .then(res => res.json())
@@ -207,7 +193,15 @@ const Play: NextPage = () => {
     }
   };
 
-  // Loading spinner component
+  const handleSelectReplay = (replay: ReplayData) => {
+    console.log("Selected replay:", replay);
+    setSelectedReplay(replay);
+    setShowReplayModal(false);
+  };
+  const handleReplayClose = () => {
+    setSelectedReplay(null);
+    setShowReplayModal(true); // Reopen the replay modal when closing a replay
+  };
   const LoadingSpinner = () => (
     <div className="flex justify-center items-center w-full h-full min-h-[200px]">
       <div className="loading loading-spinner loading-lg text-secondary"></div>
@@ -227,43 +221,92 @@ const Play: NextPage = () => {
               </div>
             </div>
   
-            {isLoading && !gameStarted ? (
-  <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
-    <LoadingSpinner />
-  </div>
-) : gameStarted ? (
-  <MonadRunnerNoSSR
-    walletAddress={connectedAddress}
-    username={userStats?.username || "Player"}
-    onGameEnd={handleGameEnd}
-    onClose={() => setGameStarted(false)}
-  />
-) : (
-  <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex flex-col items-center justify-center">
-    <div className="text-4xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-secondary to-accent">
-      Monad Runner
-    </div>
-    <p className="mb-8 max-w-md text-center text-base-content/80">
-      Navigate through the digital realm, avoid obstacles, and collect tokens to top the leaderboard!
-    </p>
-    <button
-      onClick={handleStartGame}
-      className="btn btn-secondary btn-lg shadow-neon hover:animate-glow"
-      disabled={isLoading}
-    >
-      {isLoading ? (
-        <>
-          <span className="loading loading-spinner loading-sm"></span>
-          Loading...
-        </>
-      ) : (
-        "Start Game"
-      )}
-    </button>
-  </div>
-)}
+            {isLoading && !gameStarted && !selectedReplay ? (
+              <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
+                <LoadingSpinner />
+              </div>
+            ) : selectedReplay ? (
+              // Show replay component when a replay is selected
+              <div className="relative">
+                {/* Use dynamic import for the Replay component */}
+                {(() => {
+                  const ReplayComponent = dynamic(
+                    () => import("~~/components/Replay"),
+                    {
+                      ssr: false,
+                      loading: () => <LoadingSpinner />
+                    }
+                  );
+                  
+                  return (
+                    <ReplayComponent 
+                    replayData={selectedReplay.replayData} 
+                    onScoreUpdate={(score) => console.log("Replay score update:", score)}
+                    onClose={handleReplayClose} // Use the new handler
+                  />
+                  );
+                })()}
+                
+             
+                <div className="text-center mt-6">
+                  <p className="text-sm opacity-80">
+                    Replay of {selectedReplay.username || selectedReplay.walletAddress}'s run with score: {selectedReplay.score}
+                  </p>
+                </div>
+              </div>
+            ) : gameStarted ? (
+              <MonadRunnerNoSSR
+                walletAddress={connectedAddress}
+                username={userStats?.username || "Player"}
+                onGameEnd={handleGameEnd}
+                onClose={() => setGameStarted(false)}
+              />
+            ) : (
+              <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex flex-col items-center justify-center">
+                <div className="text-4xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-secondary to-accent">
+                  Monad Runner
+                </div>
+                <p className="mb-8 max-w-md text-center text-base-content/80">
+                  Navigate through the digital realm, avoid obstacles, and collect tokens to top the leaderboard!
+                </p>
+                <button
+                  onClick={handleStartGame}
+                  className="btn btn-secondary btn-lg shadow-neon hover:animate-glow"
+                  disabled={isLoading}
+                >
+                  {isLoading ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Loading...
+                    </>
+                  ) : (
+                    "Start Game"
+                  )}
+                </button>
+              </div>
+            )}
   
-            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Replay buttons for My Games and All Games */}
+            <div className="text-center mt-6 flex justify-center gap-4">
+            <div className="text-center mt-6">
+              <button
+                className="btn btn-outline btn-secondary btn-sm"
+                onClick={() => {
+                  setSelectedReplay(null); // Clear any selected replay
+                  setShowReplayModal(true);
+                  // Default to user's games if they have a wallet connected
+                  localStorage.setItem('replayFilter', connectedAddress ? 'user' : 'all');
+                }}
+              >
+                View Games
+              </button>
+            </div>
+            </div>
+          </div>
+  
+          {/* Leaderboard and Stats Section */}
+          <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
+            <div className="mb-6">
               <div className="stat bg-base-100/30 rounded-lg">
                 <div className="stat-title">Your Best</div>
                 {loadingUserStats ? (
@@ -275,8 +318,7 @@ const Play: NextPage = () => {
                 )}
                 <div className="stat-desc">Score</div>
               </div>
-  
-              <div className="stat bg-base-100/30 rounded-lg">
+              <div className="stat bg-base-100/30 rounded-lg mt-4">
                 <div className="stat-title">Global</div>
                 {loadingLeaderboard ? (
                   <div className="stat-value text-secondary">
@@ -289,8 +331,7 @@ const Play: NextPage = () => {
                 )}
                 <div className="stat-desc">High Score</div>
               </div>
-  
-              <div className="stat bg-base-100/30 rounded-lg">
+              <div className="stat bg-base-100/30 rounded-lg mt-4">
                 <div className="stat-title">Your Rank</div>
                 {loadingUserStats ? (
                   <div className="stat-value text-accent">
@@ -306,89 +347,6 @@ const Play: NextPage = () => {
                 </div>
               </div>
             </div>
-  
-            <div className="mt-6">
-              <h3 className="text-xl font-bold mb-4">How to Play</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="card bg-base-100/30">
-                  <div className="card-body p-4">
-                    <h4 className="card-title text-base text-primary">Controls</h4>
-                    <ul className="list-disc list-inside text-sm space-y-1 opacity-80">
-                      <li>Move left - A</li>
-                      <li>Move Right - B</li>
-                      <li>Jump - W</li>
-                      <li>End Jump Early - S</li>
-                    </ul>
-                  </div>
-                </div>
-  
-                <div className="card bg-base-100/30">
-                  <div className="card-body p-4">
-                    <h4 className="card-title text-base text-secondary">Objective</h4>
-                    <ul className="list-disc list-inside text-sm space-y-1 opacity-80">
-                      <li>Navigate through obstacles</li>
-                      <li>Collect tokens for extra points</li>
-                      <li>Survive as long as possible</li>
-                    </ul>
-                  </div>
-                </div>
-  
-                <div className="card bg-base-100/30">
-                  <div className="card-body p-4">
-                    <h4 className="card-title text-base text-accent">Scoring</h4>
-                    <ul className="list-disc list-inside text-sm space-y-1 opacity-80">
-                      <li>+1 point for each second</li>
-                      <li>+5 points per token collected</li>
-                      <li>Scores saved on-chain</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-  
-          {/* Leaderboard */}
-          <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
-            <h2 className="text-2xl font-bold mb-6 text-center text-accent">Leaderboard</h2>
-  
-            {loadingLeaderboard ? (
-              <div className="flex justify-center items-center p-8">
-                <div className="loading loading-spinner loading-md text-accent"></div>
-              </div>
-            ) : leaderboardData.length ? (
-              <div className="space-y-3 mb-6">
-                {leaderboardData.map((player, index) => (
-                  <div
-                    key={player.walletAddress}
-                    className={`flex items-center justify-between p-3 rounded-lg bg-base-100/30 ${
-                      player.walletAddress === connectedAddress ? "border border-secondary" : ""
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
-                          index === 0
-                            ? "bg-yellow-500"
-                            : index === 1
-                            ? "bg-gray-300"
-                            : index === 2
-                            ? "bg-amber-700"
-                            : "bg-base-300"
-                        } text-base-100`}
-                      >
-                        {index + 1}
-                      </div>
-                      <div className="text-sm truncate w-20">
-                        {player.username ? player.username : player.walletAddress.substring(0, 6) + "..."}
-                      </div>
-                    </div>
-                    <div className="font-mono font-bold text-secondary">{player.highScore}</div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-center">No leaderboard data available.</p>
-            )}
   
             <div className="divider">Recent Games</div>
   
@@ -414,15 +372,6 @@ const Play: NextPage = () => {
                   </div>
                 ))
               )}
-            </div>
-  
-            <div className="text-center">
-              <button
-                className="btn btn-outline btn-secondary btn-sm"
-                onClick={() => setGameStarted(false)}
-              >
-                View All Games
-              </button>
             </div>
           </div>
         </div>
@@ -455,6 +404,15 @@ const Play: NextPage = () => {
             <p className="text-lg font-medium">Loading game data...</p>
           </div>
         </div>
+      )}
+  
+      {/* Replay List Modal */}
+      {showReplayModal && connectedAddress && (
+        <ReplayListModal
+          walletAddress={connectedAddress}
+          onClose={() => setShowReplayModal(false)}
+          onSelectReplay={handleSelectReplay}
+        />
       )}
     </div>
   );
