@@ -57,6 +57,11 @@
     "node": ">=20.18.3"
   },
   "dependencies": {
-    "excalibur": "^0.30.3"
+    "@aws-sdk/client-ssm": "^3.759.0",
+    "@zerodev/ecdsa-validator": "^5.4.4",
+    "@zerodev/sdk": "^5.4.26",
+    "ethers": "^6.13.5",
+    "excalibur": "^0.30.3",
+    "viem": "^2.23.10"
   }
 }

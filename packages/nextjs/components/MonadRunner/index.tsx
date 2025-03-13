@@ -1,29 +1,19 @@
+// monad-app/packages/nextjs/components/MonadRunner/index.tsx
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import dynamic from "next/dynamic";
+import React, { useEffect, useRef, useState } from "react";
 import * as ex from "excalibur";
 import { GameScene } from "./GameScene";
 import GameOver from "./components/GameOver";
-import MobileControls from "./MobileControls";
 import { ReplayEvent } from "./ReplayComponent";
-import { createResourceLoader } from "./resources";
 
-/**
- * Props
- */
 interface MonadRunnerProps {
   walletAddress: string;
   username?: string;
-  // Called when the game ends with a final score
-  onGameEnd: (score: number) => void;
-  // Called when user closes the modal
+  onGameEnd: (score: number, replayData: ReplayEvent[]) => void;
   onClose: () => void;
 }
 
-/**
- * The main MonadRunner component
- */
 const MonadRunner: React.FC<MonadRunnerProps> = ({
   walletAddress,
   username = "Player",
@@ -33,350 +23,161 @@ const MonadRunner: React.FC<MonadRunnerProps> = ({
   const gameCanvasRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ex.Engine | null>(null);
   const gameSceneRef = useRef<GameScene | null>(null);
-
-  // UI state for "Game Over" modal
   const [gameOver, setGameOver] = useState(false);
   const [score, setScore] = useState(0);
   const [replayData, setReplayData] = useState<ReplayEvent[]>([]);
 
-  // For controlling mobile vs. desktop, loading state, etc.
-  const [isMobile, setIsMobile] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isClient, setIsClient] = useState(false);
+  // Listen for the "gameover" event and call onGameEnd with final score.
+  useEffect(() => {
+    const handleGameOver = () => {
+      console.log("[MonadRunner] Game over with score:", score);
+      setGameOver(true);
+      // Pass the replay data along with the score to onGameEnd
+      onGameEnd(score, replayData);
+    };
+    window.addEventListener("gameover", handleGameOver);
+    return () => {
+      window.removeEventListener("gameover", handleGameOver);
+    };
+  }, [onGameEnd, score, replayData]);
 
-  /**
-   * Canvas ref callback
-   */
-  const handleCanvasRef = useCallback((node: HTMLDivElement | null) => {
-    if (node) {
-      (gameCanvasRef as any).current = node;
-    }
+  // Listen for token collection events using functional updates.
+  useEffect(() => {
+    const handleTokenCollected = (evt: CustomEvent) => {
+      setScore((prevScore) => {
+        const newScore = prevScore + (evt.detail?.points || 0);
+        console.log("[MonadRunner] Token collected! New score:", newScore);
+        return newScore;
+      });
+    };
+    window.addEventListener("tokencollected", handleTokenCollected as EventListener);
+    return () => {
+      window.removeEventListener("tokencollected", handleTokenCollected as EventListener);
+    };
   }, []);
 
-  /**
-   * This effect initializes the engine & scene once we're on the client
-   */
+  // Listen for score increment events using functional updates.
   useEffect(() => {
-    console.group("[MonadRunner] Initialization");
-    console.log("Client-side rendering =>", { isClient, walletAddress });
+    const handleScoreIncrement = (evt: CustomEvent) => {
+      setScore((prevScore) => {
+        const newScore = prevScore + (evt.detail?.points || 0);
+        console.log("[MonadRunner] Score incremented! New score:", newScore);
+        return newScore;
+      });
+    };
+    window.addEventListener("scoreincrement", handleScoreIncrement as EventListener);
+    return () => {
+      window.removeEventListener("scoreincrement", handleScoreIncrement as EventListener);
+    };
+  }, []);
 
-    if (!isClient) {
-      console.log("Skipping engine init, not on client yet");
-      console.groupEnd();
+  // Listen for replay data event and capture it for on-chain submission
+  useEffect(() => {
+    const handleReplayData = (evt: CustomEvent) => {
+      const replay = evt.detail?.replay;
+      if (!replay) {
+        console.error("[MonadRunner] No replay data in event:", evt);
+        return;
+      }
+      
+      console.log(`[MonadRunner] Replay data received: ${replay.length} events for score ${score}`);
+      setReplayData(replay);
+    };
+
+    window.addEventListener("replaydata", handleReplayData as EventListener);
+    return () => {
+      window.removeEventListener("replaydata", handleReplayData as EventListener);
+    };
+  }, [score]);
+
+  // Set up game engine
+  useEffect(() => {
+    if (!gameCanvasRef.current) {
+      console.error("[MonadRunner] Game canvas ref is null");
       return;
     }
-
-    // If we've already created the engine, skip
-    if (engineRef.current) {
-      console.log("Engine already exists, skipping re-init.");
-      console.groupEnd();
-      return;
+    
+    // Clear any previous canvas elements
+    while (gameCanvasRef.current.firstChild) {
+      gameCanvasRef.current.removeChild(gameCanvasRef.current.firstChild);
     }
-
-    // Must have a canvas container in the DOM
-    const canvasContainer = gameCanvasRef.current;
-    if (!canvasContainer) {
-      console.error("No canvas container available");
-      console.groupEnd();
-      return;
-    }
-
-    // Clear out any old canvases
-    while (canvasContainer.firstChild) {
-      canvasContainer.removeChild(canvasContainer.firstChild);
-    }
-
-    // Create our <canvas>
+    
+    // Create new canvas
     const canvasElement = document.createElement("canvas");
-    canvasElement.id = "monad-runner-canvas";
     canvasElement.width = 800;
     canvasElement.height = 450;
     canvasElement.style.width = "100%";
     canvasElement.style.height = "100%";
     canvasElement.style.display = "block";
-    canvasContainer.appendChild(canvasElement);
+    gameCanvasRef.current.appendChild(canvasElement);
 
-    // Create the Excalibur engine
+    // Create game engine
     const engine = new ex.Engine({
       width: 800,
       height: 450,
       canvasElement,
       backgroundColor: ex.Color.fromHex("#1a1a2e"),
-      // optional physics config
-      physics: {
-        enabled: true,
-        gravity: new ex.Vector(0, 800),
-      },
-      // you can do FitScreen if you want
-      // displayMode: ex.DisplayMode.FitScreen,
+      physics: { gravity: new ex.Vector(0, 800) },
     });
-
-    // Debug toggles (optional)
-    // engine.showDebug(true);
-    engine.debug.body.showAll = true;
-    engine.debug.collider.showAll = true;
-
-    // Store ref
     engineRef.current = engine;
 
-    // Listen for engine start
-    engine.on("start", () => {
-      console.log("[MonadRunner] Engine started", {
-        drawWidth: engine.drawWidth,
-        drawHeight: engine.drawHeight,
-      });
-    });
+    // Set up game scene
+    const gameScene = new GameScene(false); // false = not replay mode
+    gameSceneRef.current = gameScene;
+    engine.add("game", gameScene);
+    engine.goToScene("game");
 
-    // Listen for fatal exceptions
-    engine.onFatalException = (err) => {
-      console.error("[MonadRunner] Fatal engine exception:", err);
-    };
+    // For debugging
+    engine.showDebug(true);
 
-    // Show spinner
-    setIsLoading(true);
-
-    // Create our resource loader (may be empty if no images)
-    const loader = createResourceLoader();
-    // if you want to skip the "Click to Start" overlay in some old versions:
-    loader.suppressPlayButton = true;
-
-    // Start the engine with the loader
-    console.log("Starting engine with loader...");
-    engine
-      .start(loader)
+    // Start the engine
+    engine.start()
       .then(() => {
-        console.log("Engine + resources loaded");
-
-        // Create the main game scene
-        const gameScene = new GameScene(false);
-        gameSceneRef.current = gameScene;
-        engine.add("game", gameScene);
-
-        // Listen for `gameover` from the scene to trigger our local UI
-        // Also listen for `scoreincrement`, `tokencollected` if we want
-        window.addEventListener("gameover", handleGameOver);
-        window.addEventListener("scoreincrement", handleScoreIncrement);
-        window.addEventListener("tokencollected", handleTokenCollected);
-        window.addEventListener("replaydata", handleReplayData);
-
-        // Go to the game scene
-        engine.goToScene("game");
-        console.log("Game scene added & activated");
-      })
-      .then(() => {
-        console.log("Game initialization complete");
-        setIsLoading(false);
+        console.log("[MonadRunner] Engine started successfully!");
       })
       .catch((error) => {
-        console.error("Initialization failed:", error);
-        setIsLoading(false);
-      })
-      .finally(() => {
-        console.groupEnd();
+        console.error("[MonadRunner] Error starting engine:", error);
       });
 
-    // Cleanup
+    // Clean up on unmount
     return () => {
-      window.removeEventListener("gameover", handleGameOver);
-      window.removeEventListener("scoreincrement", handleScoreIncrement);
-      window.removeEventListener("tokencollected", handleTokenCollected);
-      window.removeEventListener("replaydata", handleReplayData);
-
       if (engineRef.current) {
-        console.log("Stopping engine on unmount");
+        console.log("[MonadRunner] Stopping engine on cleanup");
         engineRef.current.stop();
         engineRef.current = null;
       }
     };
-  }, [isClient, walletAddress]);
+  }, [walletAddress]);
 
-  /**
-   * Mark that we are indeed on the client
-   */
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
-
-  /**
-   * Handler for "gameover" event from the Excalibur scene
-   */
-  const handleGameOver = (evt: any) => {
-    console.log("[MonadRunner] handleGameOver => event detail:", evt.detail);
-    // read finalScore from detail
-    const finalScore = evt.detail?.finalScore ?? 0;
-  
-    // Optionally set it in local React state to show in a modal:
-    setScore(finalScore);
-    setGameOver(true);
-  
-    // Then call parent
-    onGameEnd(finalScore);
+  const handleRestart = () => {
+    setGameOver(false);
+    onClose();
   };
 
-  /**
-   * Handler for "scoreincrement" event
-   */
-  const handleScoreIncrement = (evt: any) => {
-    // The detail might have { points: 1 }, so we add it to `score`
-    const points = evt.detail?.points ?? 0;
-    setScore((prev) => prev + points);
-  };
-
-  /**
-   * Handler for "tokencollected" event
-   */
-  const handleTokenCollected = (evt: any) => {
-    // e.g. if points are 5 for a token
-    const points = evt.detail?.points ?? 0;
-    setScore((prev) => prev + points);
-  };
-
-  /**
-   * Handler for "replaydata" event
-   */
-  const handleReplayData = async (evt: any) => {
-    const replay = evt.detail?.replay ?? [];
-    console.log("[MonadRunner] Received replay data from scene:", replay);
-    
-    // Possibly we also have a final score in the scene, or we have it in local 'score' state
-    // If we want to pass finalScore from killPlayer as well, we might put it into the "replaydata" event detail
-    const finalScore = evt.detail?.finalScore ?? 0;  // or pass from detail
-  
-    try {
-      const walletAddr = walletAddress; // from props
-      if (!walletAddr) return;
-  
-      // Post to /api/game/replay
-      const res = await fetch("/api/game/replay", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          walletAddress: walletAddr,
-          score: finalScore,
-          replayData: replay
-        })
-      });
-      
-      if (!res.ok) {
-        console.error("Failed to POST replay data:", await res.text());
-      } else {
-        console.log("Replay posted successfully!");
-      }
-    } catch (err) {
-      console.error("Error posting replay data:", err);
-    }
-    
-    setReplayData(replay); // local state if you still want it
-  };
-  
-  /**
-   * If we're not on client, just show nothing (to avoid SSR mismatch)
-   */
-  if (!isClient) {
-    return null;
-  }
-
-  /**
-   * The UI
-   */
   return (
     <div className="relative w-full aspect-[16/9] bg-base-300/50 rounded-lg overflow-hidden">
-      {/* The container for our canvas */}
-      <div
-        ref={handleCanvasRef}
-        className="absolute inset-0"
-        style={{
-          border: "2px solid red",
-          backgroundColor: "rgba(255,0,0,0.1)",
-        }}
-      />
-
-      {/* Overlay a loading spinner if isLoading */}
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-          <span className="loading loading-spinner loading-lg text-primary" />
-        </div>
-      )}
-
-      {/* Mobile controls if needed */}
-      {isMobile && !gameOver && (
-        <MobileControls
-          onLeftPressed={() => {
-            const scene = gameSceneRef.current;
-            if (!scene?.player) return;
-            scene.player.vel.x = -200;
-          }}
-          onRightPressed={() => {
-            const scene = gameSceneRef.current;
-            if (!scene?.player) return;
-            scene.player.vel.x = 200;
-          }}
-          onJumpPressed={() => {
-            const scene = gameSceneRef.current;
-            if (!scene?.player) return;
-            scene.player.jump();
-          }}
-          onLeftReleased={() => {
-            const scene = gameSceneRef.current;
-            if (!scene?.player) return;
-            if (scene.player.vel.x < 0) {
-              scene.player.vel.x = 0;
-            }
-          }}
-          onRightReleased={() => {
-            const scene = gameSceneRef.current;
-            if (!scene?.player) return;
-            if (scene.player.vel.x > 0) {
-              scene.player.vel.x = 0;
-            }
-          }}
-        />
-      )}
-
-      {/* Some top-left UI with your username */}
+      <div ref={gameCanvasRef} className="absolute inset-0"></div>
       <div className="absolute top-5 left-5 glass p-2 rounded-lg z-10 flex items-center space-x-2">
         <div className="w-6 h-6 bg-primary rounded-full flex items-center justify-center text-base-100 text-xs font-bold">
           {username.charAt(0).toUpperCase()}
         </div>
         <span className="font-mono text-sm">{username}</span>
       </div>
-
-      {/* Score display top-right */}
       <div className="absolute top-5 right-16 glass p-2 rounded-lg">
         <span className="font-mono">Score: {score}</span>
       </div>
-
-      {/* A "close" button top-right */}
       <button
         onClick={onClose}
         className="absolute top-5 right-5 btn btn-sm btn-circle btn-outline"
       >
         ✕
       </button>
-
-      {/* A small controls reminder at bottom-right */}
       <div className="absolute bottom-5 right-5 glass p-2 rounded-lg text-xs">
         <p>Controls: A/D to move, W to jump, S to drop</p>
       </div>
-
-      {/* The GameOver modal if the player died */}
-      {gameOver && (
-        <GameOver
-          finalScore={score}
-          onRestart={() => {
-            // Close the game, reset everything or go back to parent
-            setGameOver(false);
-            setScore(0);
-            onClose(); 
-            // or you could do something like setIsLoading(true) & re-init
-          }}
-        />
-      )}
+      {gameOver && <GameOver finalScore={score} onRestart={handleRestart} />}
     </div>
   );
 };
 
-/** 
- * Export with no SSR 
- */
-export default dynamic(() => Promise.resolve(MonadRunner), { ssr: false });
+export default MonadRunner;

@@ -5,7 +5,7 @@ import React, { useState } from "react";
 
 interface UsernameModalProps {
   walletAddress: string;
-  onComplete: () => void;
+  onComplete: (username: string) => void;
   onCancel: () => void;
 }
 
@@ -29,28 +29,13 @@ const UsernameModal: React.FC<UsernameModalProps> = ({ walletAddress, onComplete
     
     try {
       setLoading(true);
-      const response = await fetch("/api/game/username", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          walletAddress,
-          username: username.trim(),
-        }),
-      });
       
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to set username");
-      }
-      
-      onComplete();
+      // Just pass the username to the parent component
+      // The parent will handle the blockchain interaction
+      onComplete(username.trim());
     } catch (error) {
       console.error("Error setting username:", error);
       setError(error instanceof Error ? error.message : "Failed to set username");
-    } finally {
       setLoading(false);
     }
   };
@@ -58,9 +43,9 @@ const UsernameModal: React.FC<UsernameModalProps> = ({ walletAddress, onComplete
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="glass backdrop-blur-md p-8 rounded-xl border border-base-300 w-full max-w-md">
-        <h2 className="text-2xl font-bold mb-4 text-center">Set Your Username</h2>
+        <h2 className="text-2xl font-bold mb-4 text-center">Set Your On-Chain Username</h2>
         <p className="mb-6 text-center opacity-80">
-          Before you start playing, choose a username for the leaderboard.
+          Choose a username that will be stored on the Monad blockchain.
         </p>
         
         <form onSubmit={handleSubmit}>
@@ -100,9 +85,13 @@ const UsernameModal: React.FC<UsernameModalProps> = ({ walletAddress, onComplete
               {loading ? (
                 <span className="loading loading-spinner loading-sm"></span>
               ) : (
-                "Save & Play"
+                "Save On-Chain"
               )}
             </button>
+          </div>
+          
+          <div className="mt-4 text-xs text-center opacity-70">
+            This will create a transaction on the Monad blockchain
           </div>
         </form>
       </div>
