@@ -10,7 +10,7 @@ import { ReplayEvent } from "./ReplayComponent";
 interface MonadRunnerProps {
   walletAddress: string;
   username?: string;
-  onGameEnd: (score: number) => void;
+  onGameEnd: (score: number, replayData: ReplayEvent[]) => void;
   onClose: () => void;
 }
 
@@ -32,13 +32,14 @@ const MonadRunner: React.FC<MonadRunnerProps> = ({
     const handleGameOver = () => {
       console.log("[MonadRunner] Game over with score:", score);
       setGameOver(true);
-      onGameEnd(score);
+      // Pass the replay data along with the score to onGameEnd
+      onGameEnd(score, replayData);
     };
     window.addEventListener("gameover", handleGameOver);
     return () => {
       window.removeEventListener("gameover", handleGameOver);
     };
-  }, [onGameEnd, score]);
+  }, [onGameEnd, score, replayData]);
 
   // Listen for token collection events using functional updates.
   useEffect(() => {
@@ -70,9 +71,9 @@ const MonadRunner: React.FC<MonadRunnerProps> = ({
     };
   }, []);
 
-  // Listen for replay data event and submit it to the backend.
+  // Listen for replay data event and capture it for on-chain submission
   useEffect(() => {
-    const handleReplayData = async (evt: CustomEvent) => {
+    const handleReplayData = (evt: CustomEvent) => {
       const replay = evt.detail?.replay;
       if (!replay) {
         console.error("[MonadRunner] No replay data in event:", evt);
@@ -81,53 +82,13 @@ const MonadRunner: React.FC<MonadRunnerProps> = ({
       
       console.log(`[MonadRunner] Replay data received: ${replay.length} events for score ${score}`);
       setReplayData(replay);
-      
-      try {
-        // Create the request body
-        const requestBody = { 
-          walletAddress, 
-          score, 
-          replayData: replay 
-        };
-        
-        console.log("[MonadRunner] Submitting replay data to server...");
-        console.log("[MonadRunner] Request body:", JSON.stringify(requestBody).substring(0, 200) + '...');
-        
-        const response = await fetch("/api/game/replay", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
-        });
-        
-        console.log(`[MonadRunner] Replay submission response status: ${response.status}`);
-        
-        if (!response.ok) {
-          throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
-        }
-        
-        const result = await response.json();
-        console.log("[MonadRunner] Replay data submitted successfully:", result);
-        
-        // After submitting replay, check if it's in the database
-        setTimeout(async () => {
-          try {
-            const checkResponse = await fetch(`/api/game/replay/${walletAddress}`);
-            const checkData = await checkResponse.json();
-            console.log("[MonadRunner] Verification - User replays:", checkData);
-          } catch (verifyError) {
-            console.error("[MonadRunner] Error verifying replay was saved:", verifyError);
-          }
-        }, 1000);
-      } catch (error) {
-        console.error("[MonadRunner] Error submitting replay data:", error);
-      }
     };
 
     window.addEventListener("replaydata", handleReplayData as EventListener);
     return () => {
       window.removeEventListener("replaydata", handleReplayData as EventListener);
     };
-  }, [walletAddress, score]);
+  }, [score]);
 
   // Set up game engine
   useEffect(() => {

@@ -1,104 +1,114 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import type { NextPage } from "next";
-import { useAccount } from "wagmi";
+import { useAccount, useWalletClient } from "wagmi";
 import { Address } from "~~/components/scaffold-eth";
+import useMonadRunnerContract from "~~/hooks/useMonadRunnerContract";
+import EnableAAModal from "~~/components/EnableAAModal";
+
+interface LeaderboardPlayer {
+  rank: number;
+  displayName: string;
+  score: number;
+}
 
 const Home: NextPage = () => {
   const { address: connectedAddress } = useAccount();
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [leaderboard, setLeaderboard] = useState([
-    { rank: 1, address: "0x1234...5678", score: 127 },
-    { rank: 2, address: "0x8765...4321", score: 95 },
-    { rank: 3, address: "0x5432...8765", score: 84 },
-  ]);
+  const { data: walletClient } = useWalletClient(); // used only to check connection
+  const { topScores, playerData } = useMonadRunnerContract();
+  const [showAAModal, setShowAAModal] = useState(false);
+  const [aaEnabled, setAAEnabled] = useState(false);
+  const [hasDeclinedAA, setHasDeclinedAA] = useState(false);
+  const [smartAccountAddress, setSmartAccountAddress] = useState<string | null>(null);
 
-  // Effect to register wallet when connected
-  useEffect(() => {
-    const registerWallet = async () => {
-      if (connectedAddress && !isRegistering) {
-        setIsRegistering(true);
-        try {
-          console.log(`Registering wallet: ${connectedAddress}`);
-          const response = await fetch('/api/wallet/connect', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ walletAddress: connectedAddress }),
-          });
-          
-          const data = await response.json();
-          if (!response.ok) {
-            console.error('Failed to register wallet:', data.error);
-          } else {
-            console.log('Wallet registered successfully:', data);
-            
-            // Optionally fetch leaderboard after registration
-            fetchLeaderboard();
-          }
-        } catch (error) {
-          console.error('Error registering wallet:', error);
-        } finally {
-          setIsRegistering(false);
-        }
+  // Memoize the computed leaderboard to avoid unnecessary state updates.
+  const leaderboard = useMemo<LeaderboardPlayer[]>(() => {
+    if (!topScores) return [];
+    // Deduplicate: keep only the highest score per wallet.
+    const uniqueMap = new Map<string, typeof topScores[0]>();
+    topScores.forEach((entry) => {
+      const wallet = entry.playerAddress.toLowerCase();
+      if (!uniqueMap.has(wallet) || Number(entry.score) > Number(uniqueMap.get(wallet)!.score)) {
+        uniqueMap.set(wallet, entry);
       }
-    };
-    
-    registerWallet();
-  }, [connectedAddress]);
-  
-  // Function to fetch real leaderboard data
-  const fetchLeaderboard = async () => {
+    });
+    const uniqueEntries = Array.from(uniqueMap.values()).sort(
+      (a, b) => Number(b.score) - Number(a.score)
+    );
+    // Map to our LeaderboardPlayer type.
+    return uniqueEntries.map((entry, index) => {
+      const wallet = entry.playerAddress;
+      const displayName =
+        connectedAddress &&
+        wallet.toLowerCase() === connectedAddress.toLowerCase() &&
+        playerData?.username
+          ? playerData.username
+          : wallet.substring(0, 6) + "..." + wallet.substring(wallet.length - 4);
+      return {
+        rank: index + 1,
+        displayName,
+        score: Number(entry.score),
+      };
+    });
+  }, [topScores, connectedAddress, playerData]);
+
+  // Show the AA modal only once if the wallet is connected, AA isn't enabled, and the user hasn't declined AA.
+  useEffect(() => {
+    if (connectedAddress && !aaEnabled && !hasDeclinedAA) {
+      setShowAAModal(true);
+    }
+  }, [connectedAddress, aaEnabled, hasDeclinedAA]);
+
+  // Called when the user successfully signs the AA enabling message.
+  const handleEnableAA = async (signature: string, message: string) => {
+    if (!connectedAddress) return;
     try {
-      const response = await fetch('/api/game/leaderboard?limit=3');
-      const data = await response.json();
-      
-      if (response.ok && data.data?.leaderboard) {
-        // Transform backend data to match our UI format
-        const formattedLeaderboard = data.data.leaderboard.map((player, index) => ({
-          rank: index + 1,
-          address: player.username || 
-                  (player.walletAddress ? 
-                   `${player.walletAddress.substring(0, 6)}...${player.walletAddress.substring(player.walletAddress.length - 4)}` : 
-                   "Unknown"),
-          score: player.highScore
-        }));
-        
-        setLeaderboard(formattedLeaderboard);
+      const res = await fetch("/api/aa/enable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          signature,
+          message,
+          walletAddress: connectedAddress,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.smartAccountAddress) {
+        setSmartAccountAddress(data.smartAccountAddress);
+        setAAEnabled(true);
+        setShowAAModal(false);
+        console.log("AA enabled. Smart account address:", data.smartAccountAddress);
+      } else {
+        console.error("Error enabling AA:", data.error);
       }
     } catch (error) {
-      console.error('Error fetching leaderboard:', error);
+      console.error("Error enabling AA:", error);
     }
   };
-  
-  // Fetch leaderboard on initial load
-  useEffect(() => {
-    fetchLeaderboard();
-  }, []);
+
+  // Called when the user cancels AA enablement.
+  const handleCancelAA = () => {
+    setHasDeclinedAA(true);
+    setShowAAModal(false);
+  };
 
   return (
     <div className="flex items-center flex-col flex-grow pt-10">
-      {/* Main hero section with gradient background */}
+      {showAAModal && (
+        <EnableAAModal onSuccess={handleEnableAA} onClose={handleCancelAA} />
+      )}
+      {/* Hero Section */}
       <div className="min-h-[80vh] w-full bg-base-200 bg-gradient-to-b from-base-300 to-base-100 rounded-lg overflow-hidden relative">
-        {/* Decorative grid background */}
-        <div className="absolute inset-0 bg-monad-grid bg-grid-lg opacity-10"></div>
-        
-        {/* Glowing accent elements */}
-        <div className="absolute top-1/4 left-1/4 w-32 h-32 rounded-full bg-accent/10 blur-3xl"></div>
-        <div className="absolute bottom-1/4 right-1/4 w-40 h-40 rounded-full bg-secondary/10 blur-3xl"></div>
-        
         <div className="hero-content text-center relative z-10 py-16">
           <div className="max-w-md">
             <h1 className="text-6xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-secondary to-accent">
               Monad Runner
             </h1>
             <p className="py-6 text-lg text-base-content/90">
-              Navigate through the blockchain, avoid obstacles, and collect tokens in this fast-paced game.
+              Navigate through the blockchain, avoid obstacles, and collect tokens.
             </p>
-            
             {connectedAddress ? (
               <div className="mt-8 flex flex-col items-center">
                 <div className="mb-4 text-base-content/80">Connected as:</div>
@@ -123,71 +133,42 @@ const Home: NextPage = () => {
         </div>
       </div>
 
-      {/* Game info section */}
+      {/* Leaderboard Section */}
       <div className="w-full max-w-6xl mx-auto my-12 px-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-          <div>
-            <h2 className="text-3xl font-bold mb-6 text-base-content/90">Top Players</h2>
-            
-            <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
-            {leaderboard.map((player: LeaderboardPlayer, index: number) => (
-                <div key={player.rank} className="flex items-center justify-between p-3 mb-2 rounded-lg bg-base-100/30">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
-                      player.rank === 1 ? "bg-yellow-500" : 
-                      player.rank === 2 ? "bg-gray-300" : 
-                      player.rank === 3 ? "bg-amber-700" : "bg-base-300"
-                    } text-base-100`}>
-                      {player.rank}
-                    </div>
-                    <div className="text-sm truncate w-24">{player.address}</div>
+        <h2 className="text-3xl font-bold mb-6 text-base-content/90">Top Players</h2>
+        <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
+          {leaderboard.length > 0 ? (
+            leaderboard.map((player) => (
+              <div
+                key={player.rank}
+                className="flex items-center justify-between p-3 mb-2 rounded-lg bg-base-100/30"
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
+                      player.rank === 1
+                        ? "bg-yellow-500"
+                        : player.rank === 2
+                        ? "bg-gray-300"
+                        : player.rank === 3
+                        ? "bg-amber-700"
+                        : "bg-base-300"
+                    } text-base-100`}
+                  >
+                    {player.rank}
                   </div>
-                  <div className="font-mono font-bold text-secondary">{player.score}</div>
+                  <div className="text-sm truncate w-24">{player.displayName}</div>
                 </div>
-              ))}
-              
-              <div className="mt-4 text-center">
-                <Link href="/play" className="btn btn-sm btn-accent shadow-neon-purple">
-                  View Full Leaderboard
-                </Link>
+                <div className="font-mono font-bold text-secondary">{player.score}</div>
               </div>
-            </div>
-          </div>
-          
-          <div>
-            <h2 className="text-3xl font-bold mb-6 text-base-content/90">Game Overview</h2>
-            
-            <div className="glass backdrop-blur-md p-6 rounded-xl border border-base-300">
-              <div className="mb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-content font-bold">1</div>
-                  <h3 className="text-lg font-bold text-primary">Navigate the Blockchain</h3>
-                </div>
-                <p className="ml-10 opacity-80">Fly through a procedurally generated blockchain landscape.</p>
-              </div>
-              
-              <div className="mb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-secondary-content font-bold">2</div>
-                  <h3 className="text-lg font-bold text-secondary">Avoid Obstacles</h3>
-                </div>
-                <p className="ml-10 opacity-80">Dodge network congestion and security threats along the way.</p>
-              </div>
-              
-              <div className="mb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-accent-content font-bold">3</div>
-                  <h3 className="text-lg font-bold text-accent">Collect Tokens</h3>
-                </div>
-                <p className="ml-10 opacity-80">Grab tokens to increase your score and unlock special abilities.</p>
-              </div>
-              
-              <div className="text-center mt-8">
-                <Link href="/play" className="btn btn-secondary shadow-neon">
-                  Play Now
-                </Link>
-              </div>
-            </div>
+            ))
+          ) : (
+            <p>No leaderboard data available.</p>
+          )}
+          <div className="mt-4 text-center">
+            <Link href="/play" className="btn btn-sm btn-accent shadow-neon-purple">
+              View Full Leaderboard
+            </Link>
           </div>
         </div>
       </div>
