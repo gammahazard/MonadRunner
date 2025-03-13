@@ -52,10 +52,6 @@
     "husky": "~9.1.6",
     "lint-staged": "~13.2.2"
   },
-  "packageManager": "yarn@3.2.3",
-  "engines": {
-    "node": ">=20.18.3"
-  },
   "dependencies": {
     "@aws-sdk/client-ssm": "^3.759.0",
     "@zerodev/ecdsa-validator": "^5.4.4",
@@ -63,5 +59,12 @@
     "ethers": "^6.13.5",
     "excalibur": "^0.30.3",
     "viem": "^2.23.10"
+  },
+  "packageManager": "yarn@3.2.3",
+  "engines": {
+    "node": ">=20.18.3"
+  },
+  "resolutions": {
+    "viem": "2.23.10"
   }
 }
