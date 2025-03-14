@@ -118,19 +118,22 @@ export const useAAWallet = (): AAWalletState => {
           const updatedStatus = data.isEnabled;
           const isUncertain = data.isUncertain === true;
           
-          console.log(`AA status for ${connectedAddress}: enabled=${updatedStatus}, address=${updatedAAAddress}, uncertain=${isUncertain}`);
+          console.log(`AA status for ${connectedAddress}: enabled=${data.isEnabled}, address=${updatedAAAddress}, uncertain=${isUncertain}`);
           
           // Only update if values actually changed
           if (updatedAAAddress !== aaAddress) {
             setAAAddress(updatedAAAddress);
           }
           
-          if (updatedStatus !== isAAEnabled) {
-            setIsAAEnabled(updatedStatus);
+          // Store if the account is enabled
+          const isEnabled = data.isEnabled;
+          
+          if (isEnabled !== isAAEnabled) {
+            setIsAAEnabled(isEnabled);
           }
           
           // If API shows enabled, store in localStorage for future reference
-          if (updatedStatus) {
+          if (isEnabled) {
             console.log(`API returned enabled status, saving to localStorage`);
             localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
           }
@@ -140,9 +143,9 @@ export const useAAWallet = (): AAWalletState => {
         window.dispatchEvent(
           new CustomEvent(AA_STATUS_EVENT, {
             detail: {
-              isEnabled: !!updatedStatus, // Convert to boolean to ensure it's definitive
+              isEnabled: isAAEnabled, // Use our state value which should be updated
               address: connectedAddress,
-              smartAccountAddress: updatedAAAddress,
+              smartAccountAddress: aaAddress || updatedAAAddress,
               timestamp: Date.now(),
               isDefinitive: !isUncertain, // Only mark as definitive if not uncertain
               isUncertain: isUncertain
@@ -151,7 +154,7 @@ export const useAAWallet = (): AAWalletState => {
         );
         
         lastCheckedAddressRef.current = connectedAddress;
-        return { isEnabled: updatedStatus, smartAccountAddress: updatedAAAddress };
+        return { isEnabled: data.isEnabled, smartAccountAddress: updatedAAAddress };
       } else {
         // Handle error status codes
         if (response.status === 429) {
@@ -206,6 +209,12 @@ export const useAAWallet = (): AAWalletState => {
     // CRITICAL: Check if this address has previously enabled AA
     // If the address matches what we stored, use the localStorage values directly
     const previousEnabledWallet = localStorage.getItem("monad-runner-aa-wallet");
+    
+    // Clear any window rate limit flags when accessing a wallet
+    // This ensures a clean state for a new wallet connection
+    window.isRateLimited = false;
+    window.rateLimitRetryCount = 0;
+    window.pendingUsername = "";
     
     // Case insensitive comparison to handle different address formats
     const isPreviouslyEnabled = previousEnabledWallet && 
@@ -352,37 +361,24 @@ export const useAAWallet = (): AAWalletState => {
       setIsEnabling(true);
       setError(null);
 
-      const message = `Enable Account Abstraction for Monad Runner\nWallet: ${connectedAddress}\nTimestamp: ${Date.now()}`;
-      const signature = await signMessageAsync({ message });
-
-      const response = await fetch("/api/aa/enable", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          signature,
-          message,
-          walletAddress: connectedAddress,
-          useEIP7702: isEIP7702,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to enable account abstraction");
-      }
-
-      const data = await response.json();
-      const updatedAAAddress = isEIP7702 ? connectedAddress : data.smartAccountAddress;
+      // No need to sign the message again if we already have a signature from the modal
+      // Just update the local state directly
+      
+      // If we're called directly without a signature, we need to get one
+      // But in normal flow this should never happen because we sign in the modal
+      const updatedAAAddress = isEIP7702 ? connectedAddress : connectedAddress;
 
       // CRITICAL - Immediately update localStorage with this permanent state
-      // No need to check with the API again, it's now enabled permanently
+      // No need to check with the API again, it's now enabled permanently 
       setAAAddress(updatedAAAddress);
       setIsAAEnabled(true);
       
       // Store which address this was enabled for
       // THIS IS EXTREMELY IMPORTANT - it's how we remember which wallets have AA
       console.log(`Storing wallet ${connectedAddress} in localStorage as AA-enabled`);
+      localStorage.setItem("monad-runner-aa-enabled", "true");
       localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+      localStorage.setItem("monad-runner-aa-address", updatedAAAddress);
       
       // Log the current localStorage state to verify it's set correctly
       console.log(`LocalStorage after enabling: ${localStorage.getItem("monad-runner-aa-wallet")}`);
@@ -405,15 +401,18 @@ export const useAAWallet = (): AAWalletState => {
       );
       
       // No need to check status again after enabling - we know it's enabled
+      return { success: true };
       
     } catch (err: any) {
+      console.error("Error enabling AA wallet:", err);
       setError(err.message || "Failed to enable account abstraction");
       setIsAAEnabled(false);
       setAAAddress(null);
+      return { success: false, error: err.message };
     } finally {
       setIsEnabling(false);
     }
-  }, [connectedAddress, isConnected, signMessageAsync, setAAAddress, setIsAAEnabled, isEnabling, isEIP7702, checkAAStatus]);
+  }, [connectedAddress, isConnected, setAAAddress, setIsAAEnabled, isEnabling, isEIP7702]);
 
   const sendAATransaction = useCallback(
     async (params: {

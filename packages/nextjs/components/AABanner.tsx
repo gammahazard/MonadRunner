@@ -42,11 +42,16 @@ const AABanner: React.FC = () => {
         const detail = (event as CustomEvent).detail;
         console.log("AA status event received in banner:", detail);
         
-        // If we receive a status update, we can stop loading
-        // But only after a short delay to let state propagate
-        setTimeout(() => {
-          setLoading(false);
-        }, 500);
+        // If we receive a status update indicating AA is enabled, stay in loading state to hide banner
+        if (detail && detail.isEnabled === true) {
+          console.log("AA is enabled from event, keeping banner hidden");
+          setLoading(true);
+        } else {
+          // Otherwise, stop loading to show the banner
+          setTimeout(() => {
+            setLoading(false);
+          }, 500);
+        }
       };
       
       window.addEventListener(AA_STATUS_EVENT, handleAAStatusEvent);

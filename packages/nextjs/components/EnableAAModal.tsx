@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSignMessage, useAccount } from "wagmi";
 import UsernameModal from "./UsernameModal";
-import { useScaffoldWriteContract } from "~~/hooks/scaffold-eth"; 
+import { useScaffoldWriteContract, useScaffoldReadContract } from "~~/hooks/scaffold-eth"; 
+import useMonadRunnerContractWithAA from "~~/hooks/useMonadRunnerContractWithAA";
 import {
   FaRegEdit,
   FaCheckCircle,
@@ -53,39 +54,69 @@ const stageDetails: Record<ProcessStage, { message: string; Icon: React.Componen
   error: { message: "An error occurred", Icon: FaExclamationTriangle },
 };
 
-const EnableAAModal: React.FC<EnableAAModalProps> = ({
-  onSuccess,
-  onClose,
-  useEIP7702 = true,
-  initialStage = "idle",
-  username = "",
-  onUsernameUpdate,
+const EnableAAModal: React.FC<EnableAAModalProps> = ({ 
+  onSuccess, 
+  onClose, 
+  useEIP7702 = true, 
+  initialStage = "idle", 
+  username = "", 
+  onUsernameUpdate 
 }) => {
   const { address: connectedAddress } = useAccount();
   const [error, setError] = useState<string | null>(null);
   const [processStage, setProcessStage] = useState<ProcessStage>(initialStage as ProcessStage);
   const [signatureMessage, setSignatureMessage] = useState<string>("");
   const [showUsernameModal, setShowUsernameModal] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const messageRef = useRef<string>("");
   const [transactionHash, setTransactionHash] = useState<string | null>(null);
   const [smartAccountAddress, setSmartAccountAddress] = useState<string | null>(null);
+  
+  // Refs for state tracking
+  const messageRef = useRef<string>("");
   const connectionActiveRef = useRef(false);
   const processCompletedRef = useRef(false);
+  const enablementStartedRef = useRef(false);
   
   // Get contract write functions
   const { writeContractAsync: registerPlayerFn } = useScaffoldWriteContract("MonadRunnerGame");
   const { writeContractAsync: updateUsernameFn } = useScaffoldWriteContract("MonadRunnerGame");
+  
+  // Use the hook to get player data from the contract
+  const { isRegistered, playerData } = useMonadRunnerContractWithAA();
+  
+  // Check if the user already has a username on-chain
+  const hasOnChainUsername = !!playerData?.username;
 
-  // Show UsernameModal if no username is provided.
+  // Show UsernameModal if no username is provided, but check on-chain data first
   useEffect(() => {
-    if (!username) {
+    // If process is in an error state, don't show the username modal automatically
+    if (processStage === "error") {
+      return;
+    }
+    
+    // If we have an on-chain username, use that to avoid requesting it again
+    if (hasOnChainUsername && !username) {
+      console.log("Found on-chain username:", playerData?.username);
+      onUsernameUpdate(playerData?.username || "");
+      setShowUsernameModal(false);
+      return;
+    }
+    
+    // Check for any pending username from previous attempts
+    if (!username && window.pendingUsername) {
+      console.log("Found pending username:", window.pendingUsername);
+      onUsernameUpdate(window.pendingUsername);
+    }
+    
+    // If no username from props or on-chain, show the modal
+    if (!username && !hasOnChainUsername) {
+      console.log("No username found, showing modal");
       setShowUsernameModal(true);
     } else {
       setShowUsernameModal(false);
     }
-  }, [username]);
+  }, [username, hasOnChainUsername, playerData, onUsernameUpdate, processStage]);
 
+  // Generate the signature message
   const generateMessage = useCallback(() => {
     const msg = `Enable Account Abstraction for Monad Runner\nWallet: ${connectedAddress}\nTimestamp: ${Date.now()}`;
     setSignatureMessage(msg);
@@ -93,74 +124,100 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
     return msg;
   }, [connectedAddress]);
 
+  // Hook for signing messages
   const { signMessage, data: signature, error: signError } = useSignMessage();
 
+  // Debug log whenever process stage changes
   useEffect(() => {
-    // Only run this effect if we have a signature
-    if (!signature || !connectedAddress || !username) return;
+    console.log("Process stage changed:", processStage);
+  }, [processStage]);
 
-    // Prevent multiple simultaneous processes
-    if (processCompletedRef.current || connectionActiveRef.current) {
-      console.log("Process already in progress or completed");
+  // Handle signature errors
+  useEffect(() => {
+    if (signError) {
+      setProcessStage("error");
+      setError(signError.message);
+    }
+  }, [signError]);
+
+  // Reference to EventSource for cleanup
+  const eventSourceRef = useRef<EventSource | null>(null);
+  
+  // Main effect to handle the AA enablement process
+  useEffect(() => {
+    // Only run if we have all required data
+    if (!signature || !connectedAddress || !username) {
+      console.log("Missing data for enablement:", { 
+        hasSignature: !!signature, 
+        hasAddress: !!connectedAddress, 
+        hasUsername: !!username 
+      });
       return;
     }
-
-    // Mark process as started
+    
+    // Don't run if already successful
+    if (processStage === "success") {
+      console.log("Process already successful, not restarting");
+      return;
+    }
+    
+    // Log current state for debugging
+    console.log("Starting EnableAA process with:", {
+      processStage,
+      enablementStarted: enablementStartedRef.current,
+      processCompleted: processCompletedRef.current
+    });
+    
+    // Mark as started
+    enablementStartedRef.current = true;
     connectionActiveRef.current = true;
-
-    let isMounted = true; // Track if component is still mounted
-
-    const enableAA = async () => {
+    
+    // Track component mount state
+    let isMounted = true;
+    
+    // Helper to update stages
+    const updateStage = (stage: ProcessStage) => {
+      if (!isMounted || processCompletedRef.current) return;
+      setProcessStage(stage);
+      console.log("Stage updated:", stage);
+    };
+    
+    // Start the enablement process
+    const runEnablement = async () => {
       try {
-        // Prevent re-entry
-        if (processCompletedRef.current) return;
-
-        // Single POST request
-        const response = await fetch("/api/aa/enable", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            signature,
-            message: messageRef.current,
-            walletAddress: connectedAddress,
-            useEIP7702,
-          }),
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || "Failed to enable account abstraction");
-        }
-
-        const data = await response.json();
+        // First show verifying stage
+        updateStage("verifying-signature");
         
-        // Only update state if component is still mounted
-        if (!isMounted) return;
-        
-        // Mark process as completed to prevent re-entry
-        processCompletedRef.current = true;
-        
-        setTransactionHash(data.txHash);
-        setSmartAccountAddress(data.smartAccountAddress || connectedAddress);
-        
-        setProcessStage("success");
-        
-        // Setup event source only once
-        if (!eventSourceRef.current) {
-          const query = new URLSearchParams({
+        // Function to setup and reconnect to the SSE stream
+        const setupEventSource = () => {
+          // Create query params for SSE stream
+          const params = new URLSearchParams({
             walletAddress: connectedAddress,
             signature,
             message: messageRef.current,
-            useEIP7702: useEIP7702 ? "true" : "false",
-          }).toString();
-
-          const es = new EventSource(`/api/aa/enable/stream?${query}`);
-          eventSourceRef.current = es;
+            useEIP7702: useEIP7702 ? "true" : "false"
+          });
           
-          es.addEventListener("stage", (event) => {
+          // Close any existing event source
+          if (eventSourceRef.current) {
+            eventSourceRef.current.close();
+          }
+          
+          // Setup SSE connection to get real-time updates
+          console.log("Setting up new SSE connection");
+          const eventSource = new EventSource(`/api/aa/enable/stream?${params}`);
+          eventSourceRef.current = eventSource;
+          
+          // Track reconnection attempts
+          let reconnectCount = 0;
+          const maxReconnects = 5;
+          
+          // Handle stage events
+          eventSource.addEventListener("stage", (event) => {
             try {
               if (processCompletedRef.current || !isMounted) {
-                es.close();
+                eventSource.close();
+                eventSourceRef.current = null;
                 return;
               }
               
@@ -168,55 +225,222 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
               console.log("Received stage update:", data);
               
               if (data.stage && isMounted) {
-                setProcessStage(data.stage as ProcessStage);
-              }
-              
-              if (data.stage === "success") {
-                es.close();
-                eventSourceRef.current = null;
+                // Reset reconnect count on successful stage reception
+                reconnectCount = 0;
+                
+                // Update TX details if provided
+                if (data.txHash) {
+                  setTransactionHash(data.txHash);
+                }
+                
+                if (data.smartAccountAddress) {
+                  setSmartAccountAddress(data.smartAccountAddress);
+                }
+                
+                // Update stage
+                updateStage(data.stage as ProcessStage);
+                
+                // If success, complete the process
+                if (data.stage === "success") {
+                  processCompletedRef.current = true;
+                  
+                  // Store in localStorage
+                  if (connectedAddress) {
+                    localStorage.setItem("monad-runner-aa-enabled", "true");
+                    localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+                    localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress || connectedAddress);
+                  }
+                  
+                  // Close the event source
+                  eventSource.close();
+                  eventSourceRef.current = null;
+                  
+                  // Notify parent after a small delay
+                  setTimeout(() => {
+                    if (isMounted) {
+                      onSuccess(signature, messageRef.current);
+                    }
+                  }, 1000);
+                }
               }
             } catch (err) {
               console.error("Error parsing SSE event:", err);
             }
           });
           
-          es.onerror = (err) => {
-            console.error("SSE connection error:", err);
-            es.close();
-            eventSourceRef.current = null;
-          };
-        }
+          // Handle heartbeat events
+          eventSource.addEventListener("heartbeat", () => {
+            console.log("Received heartbeat from server");
+            // Reset reconnect count on heartbeat
+            reconnectCount = 0;
+          });
+          
+          // Handle errors and implement auto-reconnect
+          eventSource.addEventListener("error", (event) => {
+            console.error("SSE error:", event);
+            
+            // Close the current connection
+            eventSource.close();
+            
+            // Attempt to reconnect unless we've reached max attempts or process completed
+            if (reconnectCount < maxReconnects && !processCompletedRef.current && isMounted) {
+              reconnectCount++;
+              console.log(`Reconnection attempt ${reconnectCount} of ${maxReconnects}`);
+              
+              // Exponential backoff for reconnection
+              const delay = Math.min(1000 * Math.pow(1.5, reconnectCount), 10000);
+              
+              setTimeout(() => {
+                if (!processCompletedRef.current && isMounted) {
+                  console.log(`Reconnecting after ${delay}ms delay`);
+                  setupEventSource();
+                }
+              }, delay);
+            } else if (!processCompletedRef.current && isMounted) {
+              console.log("Max reconnection attempts reached or process completed");
+              
+              // Only after all reconnects fail, rely on API response
+              setTimeout(() => {
+                if (!processCompletedRef.current && isMounted) {
+                  // Last fallback attempt with the regular API
+                  startApiEnablement();
+                }
+              }, 1500);
+            }
+          });
+        };
         
-        // Dispatch event to notify other components
-        window.dispatchEvent(new CustomEvent('aa-status-changed', {
-          detail: {
-            isEnabled: true,
-            address: connectedAddress,
-            smartAccountAddress: data.smartAccountAddress || connectedAddress
+        // Start an API call for the actual AA enabling
+        const startApiEnablement = async () => {
+          try {
+            const response = await fetch("/api/aa/enable", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                signature,
+                message: messageRef.current,
+                walletAddress: connectedAddress,
+                useEIP7702,
+              }),
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              
+              if (isMounted) {
+                // Update TX details
+                setTransactionHash(data.txHash);
+                setSmartAccountAddress(data.smartAccountAddress || connectedAddress);
+                
+                // Mark process as complete if not already
+                if (!processCompletedRef.current) {
+                  // Update stage to success
+                  updateStage("success");
+                  processCompletedRef.current = true;
+                  
+                  // Store in localStorage
+                  if (connectedAddress) {
+                    localStorage.setItem("monad-runner-aa-enabled", "true");
+                    localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+                    localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress || connectedAddress);
+                  }
+                  
+                  // Dispatch event
+                  window.dispatchEvent(new CustomEvent('aa-status-changed', {
+                    detail: {
+                      isEnabled: true,
+                      address: connectedAddress,
+                      smartAccountAddress: data.smartAccountAddress || connectedAddress,
+                      fromSuccess: true
+                    }
+                  }));
+                  
+                  // Notify parent after a small delay
+                  setTimeout(() => {
+                    if (isMounted) {
+                      onSuccess(signature, messageRef.current);
+                    }
+                  }, 500);
+                }
+              }
+              
+              return data;
+            } else {
+              throw new Error("API call failed");
+            }
+          } catch (error) {
+            console.error("API call error:", error);
+            if (isMounted && !processCompletedRef.current) {
+              updateStage("error");
+              setError("Failed to enable account abstraction");
+            }
           }
-        }));
+        };
         
-        // Call success callback with delay to avoid state updates during render
+        // Start both the SSE stream and the API call in parallel
+        setupEventSource();
+        
+        // Start the API call after a short delay to allow SSE to connect first
+        setTimeout(() => {
+          if (!processCompletedRef.current && isMounted) {
+            startApiEnablement();
+          }
+        }, 3000);
+        
+        // Set a fallback timeout - if after 20 seconds we don't have success,
+        // complete the process assuming success (the API call might have worked)
+        setTimeout(() => {
+          if (!processCompletedRef.current && isMounted) {
+            console.log("Fallback timeout reached, completing process");
+            
+            // Try one last API call
+            startApiEnablement().then(data => {
+              if (data && !processCompletedRef.current) {
+                processCompletedRef.current = true;
+                updateStage("success");
+                
+                // Store in localStorage
+                if (connectedAddress) {
+                  localStorage.setItem("monad-runner-aa-enabled", "true");
+                  localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+                  localStorage.setItem("monad-runner-aa-address", data?.smartAccountAddress || connectedAddress);
+                }
+                
+                // Notify parent
+                setTimeout(() => {
+                  if (isMounted) {
+                    onSuccess(signature, messageRef.current);
+                  }
+                }, 500);
+              }
+            }).catch(() => {
+              // If API failed and we get here, show error only if we're not already in success state
+              if (!processCompletedRef.current) {
+                updateStage("error");
+                setError("Failed to confirm account abstraction status");
+              }
+            });
+            
+            // Close event source if still open
+            if (eventSourceRef.current) {
+              eventSourceRef.current.close();
+              eventSourceRef.current = null;
+            }
+          }
+        }, 20000);
+        
+      } catch (error) {
+        console.error("Error in enablement:", error);
         if (isMounted) {
-          const timer = setTimeout(() => {
-            if (isMounted) onSuccess(signature, messageRef.current);
-          }, 500);
-          return () => clearTimeout(timer);
+          updateStage("error");
+          setError("Error enabling account abstraction");
         }
-
-      } catch (error: any) {
-        console.error("Error enabling AA:", error);
-        if (isMounted) {
-          setProcessStage("error");
-          setError(error.message || "Failed to enable account abstraction");
-        }
-      } finally {
-        connectionActiveRef.current = false;
       }
     };
-
-    enableAA();
-
+    
+    // Start the process
+    runEnablement();
+    
     // Cleanup function
     return () => {
       isMounted = false;
@@ -225,92 +449,310 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
         eventSourceRef.current = null;
       }
       connectionActiveRef.current = false;
-      processCompletedRef.current = false;
     };
   }, [signature, connectedAddress, username, useEIP7702, onSuccess]);
 
-
-  // Handle signature errors
-  useEffect(() => {
-    if (signError) {
-      setProcessStage("error");
-      setError(signError.message);
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-        connectionActiveRef.current = false;
-      }
-    }
-  }, [signError]);
-
-  // When the UsernameModal completes, update the username on-chain and then proceed with signing.
-  const handleUsernameComplete = async (newUsername: string) => {
-    try {
-      // First, update the parent component's state
-      await onUsernameUpdate(newUsername);
-      
-      setShowUsernameModal(false);
-      
-      // Proceed with the signing process immediately
-      // The parent component will handle any contract updates needed
-      handleSign();
-    } catch (err: any) {
-      console.error("Error updating username:", err);
-      setError(err.message || "Failed to update username");
-      setProcessStage("error");
-    }
-  };
-
-  // Start the signing process.
-  const handleSign = async () => {
-    if (!username) {
+  // Start the signing process
+  const handleSign = useCallback(async () => {
+    console.log("handleSign called with state:", {
+      hasOnChainUsername,
+      username,
+      playerUsername: playerData?.username,
+      isProcessStarted: enablementStartedRef.current,
+      processStage
+    });
+    
+    // Reset enablement flags to ensure we can restart the process
+    enablementStartedRef.current = false;
+    processCompletedRef.current = false;
+    
+    // IMPORTANT: The user must have a username set, either on-chain or from the form
+    const hasUsername = hasOnChainUsername || !!username;
+    
+    if (!hasUsername) {
+      console.log("No username available, showing username modal");
       setShowUsernameModal(true);
       return;
     }
     
-    // Reset state
+    // For on-chain usernames, make sure it's in our state
+    if (hasOnChainUsername && !username && playerData?.username) {
+      await onUsernameUpdate(playerData.username);
+    }
+    
+    // Start signing
     setProcessStage("signing");
     setError(null);
-    setTransactionHash(null);
-    setSmartAccountAddress(null);
-    processCompletedRef.current = false;
-    
-    // Close any existing event source
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-      connectionActiveRef.current = false;
-    }
     
     try {
       if (!connectedAddress) {
         throw new Error("No wallet connected");
       }
+      
+      // Generate a fresh message and sign it
       const msg = generateMessage();
-      console.log("Attempting to sign message:", { message: msg, address: connectedAddress });
+      console.log("Requesting signature for message:", msg);
       await signMessage({ message: msg });
+      console.log("Signature received successfully");
     } catch (err: any) {
+      console.error("Error during signing:", err);
+      
+      if (err.message?.includes("User denied")) {
+        setError("You rejected the signature request");
+      } else {
+        setError("Unable to complete the signing process");
+      }
+      
       setProcessStage("error");
-      setError(err.message);
     }
-  };
+  }, [connectedAddress, generateMessage, signMessage, username, playerData, hasOnChainUsername, onUsernameUpdate]);
+
+  // When the UsernameModal completes, update the username on-chain before proceeding
+  const handleUsernameComplete = useCallback(async (newUsername: string) => {
+    console.log("Username set, processing transaction...");
+    setProcessStage("signing");
+    setError(null);
+    
+    try {
+      // Update parent's state
+      await onUsernameUpdate(newUsername);
+      
+      // IMPORTANT: Never throw errors from this function - handle all errors internally
+      // Wrap the executeContractCall in a try-catch to handle errors gracefully
+      const tryContractCall = async (fn: any, args: any, maxRetries = 10) => {
+        let retryCount = 0;
+        let success = false;
+        
+        const doRetry = async () => {
+          try {
+            // Update error message to show attempt count
+            if (retryCount > 0) {
+              setError(`Sending transaction... Attempt #${retryCount+1} of ${maxRetries}`);
+            } else {
+              setError("Sending transaction to blockchain...");
+            }
+            
+            await fn(args);
+            console.log("Contract call succeeded!");
+            
+            // Clear error message on success
+            setError(null);
+            
+            success = true;
+            return true;
+          } catch (error: any) {
+            // User rejected transaction - show the username modal again
+            if (error.message?.includes("User denied") || 
+                error.message?.includes("User rejected")) {
+              console.log("User rejected transaction - showing username modal again");
+              // Clear global state
+              window.pendingUsername = "";
+              window.isRateLimited = false;
+              window.rateLimitRetryCount = 0;
+              
+              // Show the username modal again
+              setShowUsernameModal(true);
+              setProcessStage("idle");
+              setError(null);
+              
+              return false;
+            }
+            
+            // Handle rate limit errors with automatic retries
+            if (error.message?.includes("requests limited") || 
+                error.message?.includes("429") ||
+                error.message?.includes("too many requests")) {
+              
+              // Save for persistent retries
+              window.pendingUsername = args.args[0];
+              window.isRateLimited = true;
+              
+              // If we haven't maxed out retries
+              if (retryCount < maxRetries) {
+                retryCount++;
+                console.log(`Rate limited. Retrying ${retryCount}/${maxRetries}...`);
+                
+                // Update error message to show retry count
+                setError(`Rate limited. Retrying in a moment... Attempt #${retryCount} of ${maxRetries}`);
+                
+                // Exponential backoff
+                const delay = Math.min(2000 * Math.pow(1.5, retryCount - 1), 10000);
+                
+                // Wait and try again
+                await new Promise(resolve => setTimeout(resolve, delay));
+                
+                // Recursive retry
+                return doRetry();
+              } else {
+                console.log("Max retries reached, CANNOT proceed without username");
+                setError(`Maximum retry attempts (${maxRetries}) reached. Please try again later.`);
+                success = false; // Don't pretend it worked - we need a valid username
+                return false;
+              }
+            }
+            
+            // For other errors, we still can't proceed without username
+            console.warn("Contract call error, can't proceed without username:", error.message);
+            success = false; // Don't pretend it worked - username is required
+            return false;
+          }
+        };
+        
+        // Start the retry process
+        await doRetry();
+        return success;
+      };
+      
+      // Try to update or register without bubbling up errors
+      console.log("Attempting to set username:", newUsername);
+      
+      // First try to update, then fall back to register if needed
+      let usernameSuccess = await tryContractCall(updateUsernameFn, {
+        functionName: "updateUsername",
+        args: [newUsername]
+      });
+      
+      // If update failed, it might be because the player is not registered
+      if (!usernameSuccess) {
+        console.log("Update failed, trying registration instead");
+        usernameSuccess = await tryContractCall(registerPlayerFn, {
+          functionName: "registerPlayer",
+          args: [newUsername]
+        });
+      }
+      
+      // We can ONLY proceed if the username transaction was successful
+      if (usernameSuccess) {
+        console.log("Username transaction successful, proceeding to signing");
+        
+        // Close the username modal
+        setShowUsernameModal(false);
+        
+        // Reset process state to idle before continuing
+        setProcessStage("idle");
+        
+        // Reset enablement flags to allow restarting the process
+        enablementStartedRef.current = false;
+        processCompletedRef.current = false;
+        
+        // Move to signing stage with a slight delay
+        setTimeout(() => {
+          console.log("Proceeding to signing process");
+          handleSign();
+        }, 500);
+      } else {
+        // For ANY failure, even after retries, ALWAYS return to username modal
+        console.error("Failed to register username, going back to username modal");
+        
+        // Reset ALL state
+        setProcessStage("idle");
+        setError(null);
+        enablementStartedRef.current = false;
+        processCompletedRef.current = false;
+        
+        // Save username for retry if available
+        if (newUsername) {
+          window.pendingUsername = newUsername;
+        }
+        
+        // CRITICAL: Always go back to the username modal for ANY username failure
+        setShowUsernameModal(true);
+      }
+      
+    } catch (err: any) {
+      console.error("Error in username handling:", err);
+      
+      // Handle user rejection - show username modal again
+      if (err.message?.includes("User denied") || 
+          err.message?.includes("User rejected")) {
+        console.log("User rejected transaction - returning to username modal");
+        
+        // Clear rate limit flags
+        window.pendingUsername = "";
+        window.isRateLimited = false;
+        window.rateLimitRetryCount = 0;
+        
+        // Show the username modal again
+        setShowUsernameModal(true);
+        setProcessStage("idle");
+        setError(null);
+        return;
+      }
+      
+      // We CANNOT proceed without username - always go back to username modal for ALL errors
+      console.log("Error during username registration, showing username modal:", err.message);
+      
+      // Store the current username for retry if available
+      if (newUsername) {
+        window.pendingUsername = newUsername;
+      }
+      
+      // Reset ALL state
+      setProcessStage("idle");
+      setError(null);
+      enablementStartedRef.current = false;
+      processCompletedRef.current = false;
+      
+      // CRITICAL: Always go back to the username modal when there are errors
+      // with username setting - we CANNOT proceed without a username
+      setShowUsernameModal(true);
+    }
+  }, [onUsernameUpdate, updateUsernameFn, registerPlayerFn, onClose, handleSign]);
+  
+  // Helper function to handle username submission retry - ALWAYS go back to username modal
+  const handleSubmit = useCallback((username: string) => {
+    if (!username) return;
+    
+    // Reset ALL state
+    setError(null);
+    setProcessStage("idle");
+    enablementStartedRef.current = false;
+    processCompletedRef.current = false;
+    
+    // Store the username in the window object for persistent retries
+    window.pendingUsername = username;
+    
+    // CRITICAL: Always go back to username modal first
+    setTimeout(() => {
+      // Clear any error state
+      setError(null);
+      // Show the username modal
+      setShowUsernameModal(true);
+    }, 100);
+  }, []);
+
+  // Handle modal close
+  const handleClose = useCallback(() => {
+    // Reset active connection flag
+    connectionActiveRef.current = false;
+    
+    // Only reset completion flag if we weren't successful
+    if (processStage !== "success") {
+      processCompletedRef.current = false;
+    } else {
+      // Update localStorage
+      if (connectedAddress) {
+        localStorage.setItem("monad-runner-aa-enabled", "true");
+        localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+        localStorage.setItem("monad-runner-aa-address", connectedAddress);
+      }
+    }
+    
+    // Reset UI state and clear any pending username
+    setProcessStage("idle");
+    setError(null);
+    
+    // Clear any pending username and rate limit flags to ensure a fresh start next time
+    window.pendingUsername = "";
+    window.isRateLimited = false;
+    window.rateLimitRetryCount = 0;
+    
+    // Call parent close handler
+    onClose();
+  }, [processStage, onClose, connectedAddress]);
 
   const isProcessing = processStage !== "idle" && processStage !== "success" && processStage !== "error";
   const { message: stageMessage, Icon } = stageDetails[processStage];
-
-  const handleClose = () => {
-    // Clean up
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-      connectionActiveRef.current = false;
-    }
-    
-    processCompletedRef.current = false;
-    setProcessStage("idle");
-    setError(null);
-    onClose();
-  };
 
   return (
     <>
@@ -319,8 +761,9 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
           walletAddress={connectedAddress || ""}
           onComplete={handleUsernameComplete}
           onCancel={() => {
+            // When username modal is cancelled, close both modals
             setShowUsernameModal(false);
-            handleClose(); // Close the entire modal when username setting is canceled
+            onClose();
           }}
         />
       ) : (
@@ -362,6 +805,24 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
             <div className="mb-4 p-4 bg-base-200 rounded-lg">
               <p className="font-mono text-sm break-words">{signatureMessage}</p>
             </div>
+            {/* Show username requirement alert */}
+            {!hasOnChainUsername && !username && (
+              <div className="alert alert-warning mb-4">
+                <FaExclamationTriangle className="w-5 h-5 mr-2" />
+                <div className="flex flex-col w-full">
+                  <span className="mb-2">
+                    <strong>Username Required:</strong> You need to set an on-chain username before enabling Account Abstraction.
+                  </span>
+                  <button 
+                    onClick={() => setShowUsernameModal(true)}
+                    className="btn btn-sm btn-primary mt-1 self-end"
+                  >
+                    Set Username
+                  </button>
+                </div>
+              </div>
+            )}
+            
             <div className="mb-4">
               <div className="p-4 bg-base-200 rounded-lg">
                 <p className="text-sm">
@@ -394,9 +855,13 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
               <button
                 onClick={handleSign}
                 className="btn btn-secondary"
-                disabled={isProcessing || !connectedAddress || processStage === "success"}
+                disabled={isProcessing || !connectedAddress || processStage === "success" || (!hasOnChainUsername && !username)}
               >
-                {processStage === "success" ? "Enabled" : `Sign & Enable ${useEIP7702 ? "EIP‑7702" : "AA"}`}
+                {processStage === "success" ? 
+                  "Enabled" : 
+                  (!hasOnChainUsername && !username) ? 
+                    "Username Required" : 
+                    `Sign & Enable ${useEIP7702 ? "EIP‑7702" : "AA"}`}
               </button>
             </div>
           </div>

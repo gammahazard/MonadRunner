@@ -6,7 +6,7 @@ import { JsonRpcProvider } from "ethers";
 
 // Map to track last request time per wallet address to prevent spamming
 const requestTimestamps = new Map<string, number>();
-const MIN_REQUEST_INTERVAL = 1000; // 1 second minimum between requests
+const MIN_REQUEST_INTERVAL = 3000; // 3 seconds minimum between requests to be more conservative
 
 export async function POST(req: NextRequest) {
   try {

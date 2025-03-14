@@ -189,15 +189,36 @@ const Play: NextPage = () => {
     
     if (connectedAddress) {
       try {
+        // We'll show a loading state while the transaction is processing
+        // This might include automatic retries for rate limits
+        
+        // Try to register or update username
+        let success = false;
         if (isRegistered) {
-          await updateUsername(username);
+          success = await updateUsername(username);
         } else {
-          await registerPlayer(username);
+          success = await registerPlayer(username);
         }
         
-        setGameStarted(true);
+        if (success) {
+          setGameStarted(true);
+        } else {
+          // If not successful (might be due to rate limits), 
+          // we'll still allow the game to start
+          console.log("Username transaction not confirmed, starting game anyway");
+          setGameStarted(true);
+        }
       } catch (error) {
         console.error("Error setting username:", error);
+        
+        // Rate limit errors shouldn't block the user
+        if (error instanceof Error && 
+            (error.message?.includes("rate limit") || 
+             error.message?.includes("429") ||
+             error.message?.includes("requests limited"))) {
+          // Still let them play even if username couldn't be set
+          setGameStarted(true);
+        }
       } finally {
         setIsLoading(false);
       }

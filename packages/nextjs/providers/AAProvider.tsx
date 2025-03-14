@@ -98,7 +98,12 @@ export const AAProvider: React.FC<AAProviderProps> = ({ children }) => {
   // Robust username update handler
   const handleUsernameUpdate = useCallback(async (newUsername: string) => {
     console.log("Username update requested:", newUsername);
+    
+    // Store username in state for form purposes only
+    // The real validation happens when the transaction is confirmed on-chain
     setCurrentUsername(newUsername);
+    
+    // Let calling component handle the actual transaction
     return Promise.resolve();
   }, []);
   
@@ -107,22 +112,54 @@ export const AAProvider: React.FC<AAProviderProps> = ({ children }) => {
     try {
       console.log("AA Modal succeeded with signature:", signature.substring(0, 10) + "...");
       
+      // Immediately dispatch an event to update all components
+      console.log("Dispatching AA enabled event");
+      window.dispatchEvent(new CustomEvent(AA_STATUS_EVENT, {
+        detail: {
+          isEnabled: true,
+          address: connectedAddress,
+          smartAccountAddress: connectedAddress,
+          fromSuccess: true,
+          timestamp: Date.now()
+        }
+      }));
+      
+      // Update localStorage immediately to ensure persistence
+      if (connectedAddress) {
+        console.log("Updating localStorage with AA enabled status for:", connectedAddress);
+        localStorage.setItem("monad-runner-aa-enabled", "true");
+        localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+        localStorage.setItem("monad-runner-aa-address", connectedAddress);
+      }
+      
       // Use setTimeout to avoid state updates during render
       setTimeout(async () => {
         try {
           // Let the useAAWallet hook handle the enablement
           await enableAA();
           
-          // Close the modal after a short delay to allow state to settle
-          hideEnableModal();
+          // Force a page refresh to ensure all components update correctly
+          console.log("AA enablement successful, reloading page");
+          
+          // Slight delay before reload to allow any other state updates to complete
+          setTimeout(() => {
+            window.location.reload();
+          }, 300);
         } catch (error) {
           console.error("Error in AA enable delayed handler:", error);
+          // We still want to reload as the transaction might have succeeded
+          // despite errors in the API
+          console.log("Refreshing page despite error");
+          setTimeout(() => {
+            window.location.reload();
+          }, 300);
         }
-      }, 0);
+      }, 500);
     } catch (error) {
       console.error("Error in AA enable success handler:", error);
+      hideEnableModal();
     }
-  }, [enableAA, hideEnableModal]);
+  }, [enableAA, hideEnableModal, connectedAddress]);
   
   // Listen for AA status changes from any component
   // BUT - don't force a network check, just update local state
