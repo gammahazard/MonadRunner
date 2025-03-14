@@ -318,7 +318,10 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
         <UsernameModal
           walletAddress={connectedAddress || ""}
           onComplete={handleUsernameComplete}
-          onCancel={() => setShowUsernameModal(false)}
+          onCancel={() => {
+            setShowUsernameModal(false);
+            handleClose(); // Close the entire modal when username setting is canceled
+          }}
         />
       ) : (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
