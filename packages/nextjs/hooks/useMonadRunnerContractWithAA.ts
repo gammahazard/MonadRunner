@@ -4,7 +4,9 @@ import { notification } from "~~/utils/scaffold-eth";
 import { useAA } from "~~/providers/AAProvider";
 import deployedContracts from "~~/contracts/deployedContracts";
 import { encodeFunctionData } from "viem";
-import { useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { AA_STATUS_EVENT } from "./useAAWallet";
+
 // Re-export the original types
 export type PlayerData = {
   username: string;
@@ -272,21 +274,38 @@ export const useMonadRunnerContractWithAA = () => {
       refetchTopScores()
     ]);
   };
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Debounced refresh to prevent multiple rapid refreshes
+  const debouncedRefresh = useCallback(async () => {
+    if (isRefreshing) return;
+    
+    setIsRefreshing(true);
+    try {
+      await refreshAllData();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [refreshAllData, isRefreshing]);
+
+  // Listen for our standardized AA status change event
   useEffect(() => {
-    const handleAAStatusChange = (event: CustomEvent) => {
-      console.log("AA Status Changed in Contract Hook:", event.detail);
-      // Trigger a refresh of data
-      refreshAllData();
+    const handleAAStatusChange = (event: Event) => {
+      console.log("AA Status Changed in Contract Hook:", (event as CustomEvent).detail);
+      // Trigger a refresh of data with debouncing and delay to avoid updating state during render
+      setTimeout(() => {
+        debouncedRefresh();
+      }, 0);
     };
   
-    // Add event listener
-    window.addEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+    // Add event listener using the constant from useAAWallet
+    window.addEventListener(AA_STATUS_EVENT, handleAAStatusChange);
   
     // Cleanup listener
     return () => {
-      window.removeEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+      window.removeEventListener(AA_STATUS_EVENT, handleAAStatusChange);
     };
-  }, [refreshAllData]);
+  }, [debouncedRefresh]);
   return {
     isRegistered,
     playerData: formattedPlayerData,

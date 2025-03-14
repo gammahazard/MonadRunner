@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useRef, createContext, useContext, useState, useEffect, ReactNode, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { useLocalStorage } from "~~/hooks/useLocalStorage";
-import { useAAWallet } from "~~/hooks/useAAWallet";
+import { useAAWallet, AA_STATUS_EVENT } from "~~/hooks/useAAWallet";
 import EnableAAModal from "~~/components/EnableAAModal";
 import deployedContracts from "~~/contracts/deployedContracts";
 
@@ -27,6 +27,7 @@ interface AAContextType {
   contractAddress: string;
   contractAbi: any[];
   isEIP7702: boolean;
+  checkAAStatus: () => Promise<void>;
 }
 
 // Create the context with an explicit type and initial value
@@ -42,7 +43,8 @@ const AAContext = createContext<AAContextType>({
   isModalOpen: false,
   contractAddress: '',
   contractAbi: [],
-  isEIP7702: true
+  isEIP7702: true,
+  checkAAStatus: async () => {}
 });
 
 // Hook to use the AA context
@@ -61,7 +63,7 @@ export const AAProvider: React.FC<AAProviderProps> = ({ children }) => {
   const { address: connectedAddress, isConnected } = useAccount();
   const [showModal, setShowModal] = useState(false);
   const [currentUsername, setCurrentUsername] = useState<string>("");
-  const [isEIP7702, setIsEIP7702] = useLocalStorage<boolean>("monad-runner-eip7702", true);
+  const [isEIP7702] = useLocalStorage<boolean>("monad-runner-eip7702", true);
   
   // Get the game contract details from deployed contracts
   const chainId = 10143; // Monad Testnet
@@ -76,10 +78,11 @@ export const AAProvider: React.FC<AAProviderProps> = ({ children }) => {
     isEnabling,
     error,
     enableAA,
-    sendAATransaction
+    sendAATransaction,
+    checkAAStatus
   } = useAAWallet();
   
-  // Enhanced show modal with additional logging and state management
+  // Enhanced show modal with additional logging
   const showEnableModal = useCallback(() => {
     console.log("Opening AA enable modal for address:", connectedAddress);
     setShowModal(true);
@@ -99,55 +102,55 @@ export const AAProvider: React.FC<AAProviderProps> = ({ children }) => {
     return Promise.resolve();
   }, []);
   
-  // Comprehensive success handler with enhanced persistence
+  // Comprehensive success handler for modal
   const handleEnableSuccess = useCallback(async (signature: string, message: string) => {
     try {
       console.log("AA Modal succeeded with signature:", signature.substring(0, 10) + "...");
       
-      // Persist AA status with timestamp for potential future validation
-      const persistenceData = {
-        enabled: true,
-        address: connectedAddress,
-        timestamp: Date.now()
-      };
-      
-      localStorage.setItem("monad-runner-aa-state", JSON.stringify(persistenceData));
-      
-      // Refresh our local AA state 
-      await enableAA();
-      
-      // Close the modal
-      hideEnableModal();
+      // Use setTimeout to avoid state updates during render
+      setTimeout(async () => {
+        try {
+          // Let the useAAWallet hook handle the enablement
+          await enableAA();
+          
+          // Close the modal after a short delay to allow state to settle
+          hideEnableModal();
+        } catch (error) {
+          console.error("Error in AA enable delayed handler:", error);
+        }
+      }, 0);
     } catch (error) {
       console.error("Error in AA enable success handler:", error);
-      
-      // Clean up local storage if something goes wrong
-      localStorage.removeItem("monad-runner-aa-state");
     }
-  }, [connectedAddress, enableAA, hideEnableModal]);
+  }, [enableAA, hideEnableModal]);
   
-  // Side effect to handle AA state across wallet connections
-  const attemptedAA = useRef(false);
+  // Listen for AA status changes from any component
+  // BUT - don't force a network check, just update local state
   useEffect(() => {
-    if (!isConnected) {
-      localStorage.removeItem("monad-runner-aa-state");
-      attemptedAA.current = false;
-    } else if (!isAAEnabled && !attemptedAA.current) { 
-      const storedState = localStorage.getItem("monad-runner-aa-state");
-      if (storedState) {
-        try {
-          const parsedState = JSON.parse(storedState);
-          if (parsedState.address === connectedAddress) {
-            attemptedAA.current = true;
-            enableAA();
-          }
-        } catch (error) {
-          console.error("Error parsing stored AA state:", error);
-          localStorage.removeItem("monad-runner-aa-state");
-        }
+    const handleAAStatusChange = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const detail = customEvent.detail;
+      
+      // Update provider state based on event rather than triggering a status check
+      if (detail && (detail.isEnabled !== undefined || detail.smartAccountAddress)) {
+        console.log("Received AA status update event:", {
+          isEnabled: detail.isEnabled,
+          address: detail.smartAccountAddress,
+          fromCache: detail.fromCache
+        });
       }
-    }
-  }, [isConnected, connectedAddress, enableAA, isAAEnabled]);
+    };
+  
+    window.addEventListener(AA_STATUS_EVENT, handleAAStatusChange);
+    
+    return () => {
+      window.removeEventListener(AA_STATUS_EVENT, handleAAStatusChange);
+    };
+  }, []);
+  
+  // No need for a duplicate check in the provider
+  // The useAAWallet hook already checks on connection
+  // Removing this to prevent duplicate API calls
   
   // Provide the context value
   const contextValue: AAContextType = {
@@ -162,7 +165,8 @@ export const AAProvider: React.FC<AAProviderProps> = ({ children }) => {
     isModalOpen: showModal,
     contractAddress,
     contractAbi,
-    isEIP7702
+    isEIP7702,
+    checkAAStatus
   };
 
   return (

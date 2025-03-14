@@ -19,20 +19,7 @@ const Home: NextPage = () => {
   const { address: connectedAddress } = useAccount();
   const { data: walletClient } = useWalletClient(); // used only to check connection
   const { topScores, playerData, effectiveAddress, isAAEnabled, aaAddress } = useMonadRunnerContractWithAA();
-  useEffect(() => {
-    const handleAAStatusChange = (event: CustomEvent) => {
-      console.log("AA Status Changed in Home Page:", event.detail);
-      // If you have any refresh methods, call them here
-    };
-  
-    // Add event listener
-    window.addEventListener('aa-status-changed', handleAAStatusChange as EventListener);
-  
-    // Cleanup listener
-    return () => {
-      window.removeEventListener('aa-status-changed', handleAAStatusChange as EventListener);
-    };
-  }, []);
+  // Removed custom event listener - now the data auto-refreshes through useMonadRunnerContractWithAA
   // Memoize the computed leaderboard to avoid unnecessary state updates.
   const leaderboard = useMemo<LeaderboardPlayer[]>(() => {
     if (!topScores) return [];

@@ -96,17 +96,19 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
   const { signMessage, data: signature, error: signError } = useSignMessage();
 
   useEffect(() => {
+    // Only run this effect if we have a signature
+    if (!signature || !connectedAddress || !username) return;
+
     // Prevent multiple simultaneous processes
     if (processCompletedRef.current || connectionActiveRef.current) {
       console.log("Process already in progress or completed");
       return;
     }
 
-    // Only proceed if we have all necessary data
-    if (!signature || !connectedAddress || !username) return;
-
     // Mark process as started
     connectionActiveRef.current = true;
+
+    let isMounted = true; // Track if component is still mounted
 
     const enableAA = async () => {
       try {
@@ -132,6 +134,9 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
 
         const data = await response.json();
         
+        // Only update state if component is still mounted
+        if (!isMounted) return;
+        
         // Mark process as completed to prevent re-entry
         processCompletedRef.current = true;
         
@@ -154,7 +159,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
           
           es.addEventListener("stage", (event) => {
             try {
-              if (processCompletedRef.current) {
+              if (processCompletedRef.current || !isMounted) {
                 es.close();
                 return;
               }
@@ -162,7 +167,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
               const data = JSON.parse(event.data);
               console.log("Received stage update:", data);
               
-              if (data.stage) {
+              if (data.stage && isMounted) {
                 setProcessStage(data.stage as ProcessStage);
               }
               
@@ -191,15 +196,20 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
           }
         }));
         
-        // Call success callback
-        setTimeout(() => {
-          onSuccess(signature, messageRef.current);
-        }, 500);
+        // Call success callback with delay to avoid state updates during render
+        if (isMounted) {
+          const timer = setTimeout(() => {
+            if (isMounted) onSuccess(signature, messageRef.current);
+          }, 500);
+          return () => clearTimeout(timer);
+        }
 
       } catch (error: any) {
         console.error("Error enabling AA:", error);
-        setProcessStage("error");
-        setError(error.message || "Failed to enable account abstraction");
+        if (isMounted) {
+          setProcessStage("error");
+          setError(error.message || "Failed to enable account abstraction");
+        }
       } finally {
         connectionActiveRef.current = false;
       }
@@ -209,6 +219,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
 
     // Cleanup function
     return () => {
+      isMounted = false;
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
@@ -238,28 +249,10 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
       // First, update the parent component's state
       await onUsernameUpdate(newUsername);
       
-      // Determine if we need to register or update
-      try {
-        if (username) {
-          // User already has a username, so update it
-          await updateUsernameFn({
-            functionName: "updateUsername",
-            args: [newUsername],
-          });
-        } else {
-          // User doesn't have a username, so register
-          await registerPlayerFn({
-            functionName: "registerPlayer",
-            args: [newUsername],
-          });
-        }
-      } catch (err) {
-        console.warn("Contract interaction failed, will try again later:", err);
-      }
-      
       setShowUsernameModal(false);
       
-      // Proceed with the signing process
+      // Proceed with the signing process immediately
+      // The parent component will handle any contract updates needed
       handleSign();
     } catch (err: any) {
       console.error("Error updating username:", err);

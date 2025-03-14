@@ -74,20 +74,7 @@ const Play: NextPage = () => {
     aaAddress,
     effectiveAddress
   } = useMonadRunnerContractWithAA();
-  useEffect(() => {
-    const handleAAStatusChange = (event: CustomEvent) => {
-      console.log("AA Status Changed in Home Page:", event.detail);
-      // If you have any refresh methods, call them here
-    };
-  
-    // Add event listener
-    window.addEventListener('aa-status-changed', handleAAStatusChange as EventListener);
-  
-    // Cleanup listener
-    return () => {
-      window.removeEventListener('aa-status-changed', handleAAStatusChange as EventListener);
-    };
-  }, []);
+  // Removed custom event listener - now the data auto-refreshes through useMonadRunnerContractWithAA
   // Set mounted flag once on client
   useEffect(() => {
     setMounted(true);
