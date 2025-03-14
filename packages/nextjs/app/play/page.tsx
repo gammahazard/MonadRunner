@@ -1,7 +1,7 @@
 "use client";
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { NextPage } from "next";
 import { useAccount } from "wagmi";
 import { Address } from "~~/components/scaffold-eth";
@@ -60,6 +60,7 @@ const Play: NextPage = () => {
   const [selectedReplay, setSelectedReplay] = useState<ReplayData | null>(null);
 
   // Use our AA-enabled contract hook
+  
   const {
     isRegistered,
     playerData,
@@ -73,53 +74,71 @@ const Play: NextPage = () => {
     aaAddress,
     effectiveAddress
   } = useMonadRunnerContractWithAA();
-
+  useEffect(() => {
+    const handleAAStatusChange = (event: CustomEvent) => {
+      console.log("AA Status Changed in Home Page:", event.detail);
+      // If you have any refresh methods, call them here
+    };
+  
+    // Add event listener
+    window.addEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+  
+    // Cleanup listener
+    return () => {
+      window.removeEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+    };
+  }, []);
   // Set mounted flag once on client
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Update leaderboard data when topScores changes
+  const computedLeaderboard = useMemo(() => {
+    if (!topScores) return [];
+    return topScores.map((score, index) => ({
+      rank: index + 1,
+      walletAddress: score.playerAddress,
+      username: playerData?.username || "Player",
+      highScore: Number(score.score),
+    }));
+  }, [topScores, playerData]);
+  
+  // 2. Update leaderboard state only if it’s different.
   useEffect(() => {
-    if (topScores) {
-      const formattedLeaderboard = topScores.map((score, index) => ({
-        rank: index + 1,
-        walletAddress: score.playerAddress,
-        username: playerData?.username || "Player",
-        highScore: Number(score.score)
-      }));
-      setLeaderboardData(formattedLeaderboard);
+    // Do a simple deep equality check by converting to JSON strings.
+    const newLeaderboard = JSON.stringify(computedLeaderboard);
+    const prevLeaderboard = JSON.stringify(leaderboardData);
+    if (newLeaderboard !== prevLeaderboard) {
+      setLeaderboardData(computedLeaderboard);
       setLoadingLeaderboard(false);
     }
-  }, [topScores, playerData]);
-
-  // Update user stats when playerData changes
-  useEffect(() => {
+  }, [computedLeaderboard, leaderboardData]);
+  
+  // 3. Compute user stats with useMemo.
+  const computedUserStats = useMemo(() => {
     if (playerData && effectiveAddress) {
-      setUserStats({
+      return {
         walletAddress: effectiveAddress,
         username: playerData.username,
         highScore: Number(playerData.highScore),
         timesPlayed: Number(playerData.timesPlayed),
-        rank: playerRank || 0
-      });
+        rank: playerRank || 0,
+      };
+    }
+    return null;
+  }, [playerData, effectiveAddress, playerRank]);
+  
+  // 4. Update user stats state only if it’s changed.
+  useEffect(() => {
+    const newStats = JSON.stringify(computedUserStats);
+    const prevStats = JSON.stringify(userStats);
+    if (newStats !== prevStats) {
+      setUserStats(computedUserStats);
       setLoadingUserStats(false);
     }
-  }, [playerData, effectiveAddress, playerRank]);
-
-  // Update recent games when playerScoreHistory changes
-  useEffect(() => {
-    if (playerScoreHistory) {
-      const formattedRecentGames = playerScoreHistory
-        .map(score => ({
-          time: formatTimestamp(Number(score.timestamp)),
-          score: Number(score.score)
-        }))
-        .sort((a, b) => b.score - a.score);
-      setRecentGames(formattedRecentGames);
-    }
-  }, [playerScoreHistory]);
-
+  }, [computedUserStats, userStats]);
+  
+  // 5. Finally, update isLoading only when both flags are done.
   useEffect(() => {
     if (!loadingLeaderboard && !loadingUserStats) {
       setIsLoading(false);
@@ -328,16 +347,7 @@ const Play: NextPage = () => {
                 {/* Replay buttons */}
                 <div className="text-center mt-6 flex justify-center gap-4">
                   <div className="text-center mt-6">
-                    <button
-                      className="btn btn-outline btn-secondary btn-sm"
-                      onClick={() => {
-                        setSelectedReplay(null);
-                        setShowReplayModal(true);
-                        localStorage.setItem("replayFilter", connectedAddress ? "user" : "all");
-                      }}
-                    >
-                      View Games
-                    </button>
+                  
                   </div>
                 </div>
               </div>

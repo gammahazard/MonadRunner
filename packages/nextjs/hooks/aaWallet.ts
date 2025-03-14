@@ -9,14 +9,13 @@ import { createPublicClient, http, type Address } from "viem";
 import type { Signer } from "ethers";
 import { getUserOperationGasPrice } from "@zerodev/sdk";
 import { SigningKey } from "ethers";
-import { privateKeyToAccount } from "viem/accounts";
 
 // Updated chain configuration with a version property.
 export const monadTestnet = {
   id: 10143,
   name: "Monad Testnet",
   network: "monad-testnet",
-  version: 1, // Added required version field for SDK 5.4.x
+  version: 1, // Required version field for SDK 5.4.x
   nativeCurrency: {
     name: "Monad",
     symbol: "MON",
@@ -65,10 +64,13 @@ export const initializeAAWallet = async (externalSigner: Signer) => {
     signerType: typeof externalSigner,
     signerProperties: Object.keys(externalSigner),
     address: (externalSigner as any).address,
-    publicKey: (externalSigner as any).publicKey,
+    publicKey: (externalSigner as any).publicKey?.substring(0, 10) + "...",
   });
 
-  const signerAddress = await externalSigner.getAddress();
+  const signerAddress =
+  typeof (externalSigner as any).getAddress === "function"
+    ? await (externalSigner as any).getAddress()
+    : (externalSigner as any).address;
   console.log("Signer address retrieved:", signerAddress);
 
   const entryPoint = getEntryPoint("0.7"); // Returns an object with address and version.
@@ -76,15 +78,24 @@ export const initializeAAWallet = async (externalSigner: Signer) => {
   const paymasterRpc = process.env.NEXT_PUBLIC_ZERODEV_PAYMASTER_RPC!;
   const bundlerRpc = process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC!;
 
+  console.log("ZeroDev configuration:", {
+    projectId,
+    paymasterRpc: paymasterRpc.substring(0, 40) + "...",
+    bundlerRpc: bundlerRpc.substring(0, 40) + "...",
+  });
+
   const publicClient = createPublicClient({
     transport: http(monadTestnet.rpcUrls.default.http[0]),
     chain: monadTestnet,
   });
 
+  // Create paymaster client for gas sponsorship
   const paymasterClient = createZeroDevPaymasterClient({
     chain: monadTestnet,
     transport: http(paymasterRpc),
   });
+
+  console.log("Created ZeroDev paymaster client");
 
   try {
     // Create ECDSA validator using the updated entryPoint object.
@@ -93,6 +104,8 @@ export const initializeAAWallet = async (externalSigner: Signer) => {
       entryPoint,
       kernelVersion: KERNEL_V3_1,
     });
+
+    console.log("Created ECDSA validator");
 
     const account = await createKernelAccount(publicClient, {
       plugins: { sudo: ecdsaValidator },
@@ -106,11 +119,11 @@ export const initializeAAWallet = async (externalSigner: Signer) => {
       accountProperties: Object.keys(account),
     });
 
-    // Create the kernel client with the new API options.
+    // Create the kernel client with the new API options and paymaster for gas sponsorship
     const kernelClient = createKernelAccountClient({
       account,
       chain: monadTestnet,
-      bundlerTransport: http(`${bundlerRpc}?provider=ULTRA_RELAY`),
+      bundlerTransport: http(bundlerRpc),
       client: publicClient,
       paymaster: {
         getPaymasterData(userOperation) {
@@ -123,6 +136,8 @@ export const initializeAAWallet = async (externalSigner: Signer) => {
         },
       },
     });
+
+    console.log("Created kernel client with paymaster for gas sponsorship");
 
     return {
       kernelClient,

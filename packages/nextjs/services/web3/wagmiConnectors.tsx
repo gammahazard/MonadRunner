@@ -23,9 +23,9 @@ const wallets = [
   rainbowWallet,
   safeWallet,
   backpackWallet,
-  ...(!targetNetworks.some(network => network.id !== (chains.hardhat as chains.Chain).id) || !onlyLocalBurnerWallet
+  ...(targetNetworks.some(network => network.id === (chains.hardhat as chains.Chain).id) && onlyLocalBurnerWallet
     ? [rainbowkitBurnerWallet]
-    : []),
+    : []), // Only add the burner wallet if on Hardhat & explicitly allowed
 ];
 
 /**

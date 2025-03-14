@@ -4,7 +4,7 @@ import { notification } from "~~/utils/scaffold-eth";
 import { useAA } from "~~/providers/AAProvider";
 import deployedContracts from "~~/contracts/deployedContracts";
 import { encodeFunctionData } from "viem";
-
+import { useEffect } from 'react';
 // Re-export the original types
 export type PlayerData = {
   username: string;
@@ -272,21 +272,32 @@ export const useMonadRunnerContractWithAA = () => {
       refetchTopScores()
     ]);
   };
-
+  useEffect(() => {
+    const handleAAStatusChange = (event: CustomEvent) => {
+      console.log("AA Status Changed in Contract Hook:", event.detail);
+      // Trigger a refresh of data
+      refreshAllData();
+    };
+  
+    // Add event listener
+    window.addEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+  
+    // Cleanup listener
+    return () => {
+      window.removeEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+    };
+  }, [refreshAllData]);
   return {
-    // State
     isRegistered,
     playerData: formattedPlayerData,
     playerRank: playerRank ? Number(playerRank) : null,
     topScores: topScores as GameScore[] | undefined,
     playerScoreHistory: playerScoreHistory as GameScore[] | undefined,
     
-    // AA information
     isAAEnabled,
     aaAddress,
     effectiveAddress,
 
-    // Actions
     registerPlayer,
     updateUsername,
     submitScore,

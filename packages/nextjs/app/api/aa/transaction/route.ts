@@ -4,7 +4,7 @@ import { initializeAAWallet } from "~~/hooks/aaWallet";
 import deployedContracts from "~~/contracts/deployedContracts";
 import { JsonRpcProvider, Wallet, ethers } from "ethers";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
-
+import { privateKeyToAccount } from "viem/accounts";
 /**
  * Retrieves the relayer private key from AWS Parameter Store.
  */
@@ -38,9 +38,16 @@ async function getRelayerPrivateKey(): Promise<string> {
 async function verifySmartAccountOwnership(
   provider: JsonRpcProvider,
   eoaAddress: string,
-  smartAccountAddress: string
+  smartAccountAddress: string,
+  isEIP7702: boolean = false
 ): Promise<boolean> {
   try {
+    // With EIP-7702, the smart account is the EOA itself
+    if (isEIP7702) {
+      return eoaAddress.toLowerCase() === smartAccountAddress.toLowerCase();
+    }
+    
+    // For legacy AA, check the contract registration
     const chainId = 10143; // Monad Testnet
     const contractData = deployedContracts[chainId].MonadRunnerGame;
     
@@ -64,11 +71,20 @@ async function verifySmartAccountOwnership(
 export async function POST(req: NextRequest) {
   try {
     // Parse input parameters from the request
-    const { aaAddress, to, value, data, originalSender } = await req.json();
+    const { aaAddress, to, value, data, originalSender, useEIP7702 = false } = await req.json();
     
     if (!aaAddress || !to || !originalSender) {
       return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
     }
+
+    console.log("Transaction request:", {
+      aaAddress,
+      to,
+      valuePresent: !!value,
+      dataPresent: !!data,
+      originalSender,
+      useEIP7702
+    });
 
     // Create a provider
     const provider = new JsonRpcProvider("https://testnet-rpc.monad.xyz");
@@ -77,7 +93,8 @@ export async function POST(req: NextRequest) {
     const isVerified = await verifySmartAccountOwnership(
       provider,
       originalSender,
-      aaAddress
+      aaAddress,
+      useEIP7702
     );
     
     if (!isVerified) {
@@ -88,20 +105,39 @@ export async function POST(req: NextRequest) {
     }
 
     // Retrieve the relayer private key from AWS Parameter Store
-    const relayerPrivateKey = await getRelayerPrivateKey();
+    let relayerPrivateKey = await getRelayerPrivateKey();
+    relayerPrivateKey = relayerPrivateKey.trim();
+    if (!relayerPrivateKey.startsWith("0x")) {
+      relayerPrivateKey = "0x" + relayerPrivateKey;
+    }
     
-    // Instantiate the relayer signer
-    const externalSigner = new Wallet(relayerPrivateKey, provider);
+    // Cast the private key to the required type.
+    const externalSigner = privateKeyToAccount(relayerPrivateKey as `0x${string}`);
 
-    // Initialize the AA wallet with the relayer signer
+
+    
+    // Log relayer info
+    console.log("Using relayer for transaction:", externalSigner.address);
+
+    // Initialize the AA wallet with the relayer signer and paymaster
+    console.log("Initializing AA wallet with ZeroDev paymaster...");
     const { kernelClient } = await initializeAAWallet(externalSigner);
     
-    // Execute the transaction
+    // Log transaction details before sending
+    console.log("Sending transaction with ZeroDev paymaster:", {
+      to,
+      value: value || "0",
+      dataSize: data ? (data.length - 2) / 2 : 0, // Hex string, subtract '0x' and divide by 2 for bytes
+    });
+
+    // Execute the transaction with paymaster for gas sponsorship
     const txHash = await kernelClient.sendTransaction({
       to: to,
       value: BigInt(value || "0"),
       data: data || "0x",
     });
+
+    console.log("Transaction sent successfully:", txHash);
 
     // Log the transaction for auditing
     console.log(`Transaction sent: ${txHash} for account ${aaAddress}, requested by ${originalSender}`);
