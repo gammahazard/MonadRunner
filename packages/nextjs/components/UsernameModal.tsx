@@ -1,4 +1,3 @@
-// components/UsernameModal.tsx
 "use client";
 
 import React, { useState } from "react";
@@ -29,13 +28,17 @@ const UsernameModal: React.FC<UsernameModalProps> = ({ walletAddress, onComplete
     
     try {
       setLoading(true);
-      
-      // Just pass the username to the parent component
-      // The parent will handle the blockchain interaction
-      onComplete(username.trim());
+      // Call the parent's onComplete with the trimmed username.
+      await onComplete(username.trim());
+      // Reset the modal state after success.
+      setUsername("");
+      setError("");
+      setLoading(false);
     } catch (error) {
       console.error("Error setting username:", error);
       setError(error instanceof Error ? error.message : "Failed to set username");
+      // Reset the input field so the user can try again.
+      setUsername("");
       setLoading(false);
     }
   };
@@ -72,7 +75,13 @@ const UsernameModal: React.FC<UsernameModalProps> = ({ walletAddress, onComplete
             <button
               type="button"
               className="btn btn-outline"
-              onClick={onCancel}
+              onClick={() => {
+                // Reset state on cancel
+                setUsername("");
+                setError("");
+                setLoading(false);
+                onCancel();
+              }}
               disabled={loading}
             >
               Cancel

@@ -5,6 +5,7 @@ pragma solidity ^0.8.20;
  * @title MonadRunnerGame
  * @dev Smart contract for storing Monad Runner game data on-chain,
  *      including registration of a smart account for account abstraction.
+ *      Optimized for minimal gas usage.
  */
 contract MonadRunnerGame {
     // =============== EVENTS ===============
@@ -13,6 +14,8 @@ contract MonadRunnerGame {
     event ScoreSubmitted(address indexed playerAddress, uint256 score, uint256 timestamp, bytes32 replayHash);
     event ReplayDataStored(address indexed playerAddress, bytes32 indexed replayHash);
     event SmartAccountRegistered(address indexed eoa, address smartAccount);
+    event RelayerAdded(address indexed relayer);
+    event RelayerRemoved(address indexed relayer);
 
     // =============== STRUCTS ===============
     struct Player {
@@ -27,65 +30,93 @@ contract MonadRunnerGame {
         address playerAddress;
         uint256 score;
         uint256 timestamp;
-        bytes32 replayHash; // Hash of replay data, can be used to verify off-chain replay data
+        bytes32 replayHash;
     }
 
+    // =============== CONSTANTS ===============
+    // Using constant for fixed values saves gas
+    uint256 private constant MAX_LEADERBOARD_SIZE = 100;
+    uint256 private constant MAX_USERNAME_LENGTH = 20;
+    uint256 private constant MAX_PLAYER_SCORE_HISTORY = 10;
+    
+    // Cheaper to use uint8 for small numbers (uses less storage)
+    uint8 private constant USERNAME_PREFIX_LENGTH = 7; // "Player_"
+
     // =============== STATE VARIABLES ===============
-    address public owner;
+    // Immutable variables cost less gas than regular state variables
+    address public immutable owner;
     
-    // Mapping from EOA (player) address to Player struct.
+    // Pack related data together when possible
     mapping(address => Player) public players;
-    
-    // Mapping from EOA (player) to their registered smart account address.
     mapping(address => address) public smartAccounts;
-    
-    // Array of registered EOA addresses (for enumeration).
-    address[] public playerAddresses;
-    
-    // Array of top scores for the leaderboard.
-    GameScore[] public topScores;
-    
-    // Maximum number of top scores to track.
-    uint256 public constant MAX_LEADERBOARD_SIZE = 100;
-    
-    // Maximum username length.
-    uint256 public constant MAX_USERNAME_LENGTH = 20;
-    
-    // Replay data storage (hash => exists).
     mapping(bytes32 => bool) public replayExists;
+    mapping(address => bool) public authorizedRelayers;
     
-    // Mapping from EOA to their game history (most recent scores).
-    mapping(address => GameScore[]) public playerScoreHistory;
-    
-    // Maximum number of scores to keep per player.
-    uint256 public constant MAX_PLAYER_SCORE_HISTORY = 10;
+    // Separate mappings for arrays to avoid storage bloat
+    mapping(address => GameScore[]) private playerScoreHistory;
+    address[] public playerAddresses;
+    GameScore[] public topScores;
 
     // =============== CONSTRUCTOR ===============
     constructor() {
         owner = msg.sender;
+        // Add the deployer as the first authorized relayer
+        authorizedRelayers[msg.sender] = true;
+        emit RelayerAdded(msg.sender);
     }
 
     // =============== MODIFIERS ===============
+    // Use custom errors instead of revert strings to save gas
+    error OnlyOwner();
+    error OnlyRegisteredPlayer();
+    error OnlyAuthorizedRelayer();
+    error PlayerAlreadyRegistered();
+    error PlayerDoesNotExist();
+    error InvalidSmartAccount();
+    error UsernameTooLong();
+    error UsernameEmpty();
+    error ReplayAlreadyExists();
+    error InvalidRelayerAddress();
+    error NotAnAuthorizedRelayer();
+
     modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this function");
+        if (msg.sender != owner) revert OnlyOwner();
         _;
     }
 
     modifier onlyRegisteredPlayer() {
-        require(players[msg.sender].exists, "Player not registered");
+        if (!players[msg.sender].exists) revert OnlyRegisteredPlayer();
         _;
     }
 
-    // =============== EXTERNAL FUNCTIONS ===============
-    /**
-     * @dev Register a new player with a username.
-     * @param username The player's username.
-     */
-    function registerPlayer(string memory username) external {
-        require(!players[msg.sender].exists, "Player already registered");
-        require(bytes(username).length > 0, "Username cannot be empty");
-        require(bytes(username).length <= MAX_USERNAME_LENGTH, "Username too long");
+    modifier onlyAuthorizedRelayer() {
+        if (!authorizedRelayers[msg.sender]) revert OnlyAuthorizedRelayer();
+        _;
+    }
 
+    // =============== ADMIN FUNCTIONS ===============
+    function addRelayer(address relayer) external onlyOwner {
+        if (relayer == address(0)) revert InvalidRelayerAddress();
+        authorizedRelayers[relayer] = true;
+        emit RelayerAdded(relayer);
+    }
+
+    function removeRelayer(address relayer) external onlyOwner {
+        if (!authorizedRelayers[relayer]) revert NotAnAuthorizedRelayer();
+        authorizedRelayers[relayer] = false;
+        emit RelayerRemoved(relayer);
+    }
+
+    // =============== EXTERNAL FUNCTIONS ===============
+    function registerPlayer(string calldata username) external {
+        // Using calldata for string parameters saves gas when the function doesn't modify the string
+        if (players[msg.sender].exists) revert PlayerAlreadyRegistered();
+        
+        uint256 len = bytes(username).length;
+        if (len == 0) revert UsernameEmpty();
+        if (len > MAX_USERNAME_LENGTH) revert UsernameTooLong();
+
+        // Initialize all fields directly to save gas
         players[msg.sender] = Player({
             username: username,
             highScore: 0,
@@ -93,41 +124,69 @@ contract MonadRunnerGame {
             lastPlayed: 0,
             exists: true
         });
+        
         playerAddresses.push(msg.sender);
         emit PlayerRegistered(msg.sender, username);
     }
 
-    /**
-     * @dev Update player's username.
-     * @param newUsername The new username.
-     */
-    function updateUsername(string memory newUsername) external onlyRegisteredPlayer {
-        require(bytes(newUsername).length > 0, "Username cannot be empty");
-        require(bytes(newUsername).length <= MAX_USERNAME_LENGTH, "Username too long");
+    function updateUsername(string calldata newUsername) external onlyRegisteredPlayer {
+        uint256 len = bytes(newUsername).length;
+        if (len == 0) revert UsernameEmpty();
+        if (len > MAX_USERNAME_LENGTH) revert UsernameTooLong();
         
         players[msg.sender].username = newUsername;
         emit UsernameChanged(msg.sender, newUsername);
     }
 
-    /**
-     * @dev Register the smart account (AA wallet) associated with the player's EOA.
-     * @param smartAccount The smart account address.
-     */
     function registerSmartAccount(address smartAccount) external onlyRegisteredPlayer {
-        require(smartAccount != address(0), "Invalid smart account address");
+        if (smartAccount == address(0)) revert InvalidSmartAccount();
         smartAccounts[msg.sender] = smartAccount;
         emit SmartAccountRegistered(msg.sender, smartAccount);
     }
 
-    /**
-     * @dev Submit a game score.
-     * @param score The achieved score.
-     * @param replayHash The hash of the replay data.
-     */
+    function registerSmartAccountFor(address playerAddress, address smartAccount) external onlyAuthorizedRelayer {
+        if (smartAccount == address(0)) revert InvalidSmartAccount();
+        
+        // Gas optimization: Store the existence check result
+        bool playerExists = players[playerAddress].exists;
+        
+        // For EIP-7702, if the player doesn't exist yet but the smart account
+        // is the same as the player address, register the player automatically
+        if (!playerExists && playerAddress == smartAccount) {
+            // Generate username only when needed (gas optimization)
+            string memory username = _generateDefaultUsername(playerAddress);
+            
+            players[playerAddress] = Player({
+                username: username,
+                highScore: 0,
+                timesPlayed: 0,
+                lastPlayed: 0,
+                exists: true
+            });
+            
+            playerAddresses.push(playerAddress);
+            emit PlayerRegistered(playerAddress, username);
+        } else {
+            // Otherwise, require that the player already exists
+            if (!playerExists) revert PlayerDoesNotExist();
+        }
+        
+        smartAccounts[playerAddress] = smartAccount;
+        emit SmartAccountRegistered(playerAddress, smartAccount);
+    }
+
     function submitScore(uint256 score, bytes32 replayHash) external onlyRegisteredPlayer {
+        // Gas optimization: Use storage pointer
         Player storage player = players[msg.sender];
-        player.timesPlayed++;
+        
+        // Unchecked math for gas optimization when overflow is impossible
+        unchecked {
+            player.timesPlayed++;
+        }
+        
         player.lastPlayed = block.timestamp;
+        
+        // Only update highScore if needed
         if (score > player.highScore) {
             player.highScore = score;
         }
@@ -140,143 +199,179 @@ contract MonadRunnerGame {
         });
         
         replayExists[replayHash] = true;
-        addToPlayerScoreHistory(msg.sender, newScore);
-        updateLeaderboard(newScore);
+        _addToPlayerScoreHistory(msg.sender, newScore);
+        _updateLeaderboard(newScore);
         
         emit ScoreSubmitted(msg.sender, score, block.timestamp, replayHash);
         emit ReplayDataStored(msg.sender, replayHash);
     }
 
-    /**
-     * @dev Store replay data hash for off-chain replay verification.
-     * @param replayHash The hash of the replay data.
-     */
     function storeReplayDataHash(bytes32 replayHash) external onlyRegisteredPlayer {
-        require(!replayExists[replayHash], "Replay hash already exists");
+        if (replayExists[replayHash]) revert ReplayAlreadyExists();
         replayExists[replayHash] = true;
         emit ReplayDataStored(msg.sender, replayHash);
     }
 
     // =============== VIEW FUNCTIONS ===============
-    /**
-     * @dev Get player information.
-     * @param playerAddress The player's EOA address.
-     * @return Player data.
-     */
     function getPlayer(address playerAddress) external view returns (Player memory) {
-        require(players[playerAddress].exists, "Player does not exist");
+        if (!players[playerAddress].exists) revert PlayerDoesNotExist();
         return players[playerAddress];
     }
 
-    /**
-     * @dev Get the top scores (leaderboard).
-     * @param count Number of top scores to retrieve.
-     * @return Array of GameScore structs.
-     */
     function getTopScores(uint256 count) external view returns (GameScore[] memory) {
+        // Gas optimization: Avoid unnecessary copies
         uint256 actualCount = topScores.length;
         if (count > actualCount) {
             count = actualCount;
         }
+        
         GameScore[] memory results = new GameScore[](count);
-        for (uint256 i = 0; i < count; i++) {
-            results[i] = topScores[i];
+        
+        // Use unchecked when overflow is impossible (gas optimization)
+        unchecked {
+            for (uint256 i = 0; i < count; i++) {
+                results[i] = topScores[i];
+            }
         }
+        
         return results;
     }
 
-    /**
-     * @dev Get a player's score history.
-     * @param playerAddress The player's EOA address.
-     * @return Array of GameScore structs.
-     */
     function getPlayerScoreHistory(address playerAddress) external view returns (GameScore[] memory) {
-        require(players[playerAddress].exists, "Player does not exist");
+        if (!players[playerAddress].exists) revert PlayerDoesNotExist();
         return playerScoreHistory[playerAddress];
     }
 
-    /**
-     * @dev Get a player's rank on the leaderboard.
-     * @param playerAddress The player's EOA address.
-     * @return The player's rank (1-based) or 0 if not on the leaderboard.
-     */
     function getPlayerRank(address playerAddress) external view returns (uint256) {
-        require(players[playerAddress].exists, "Player does not exist");
-        for (uint256 i = 0; i < topScores.length; i++) {
-            if (topScores[i].playerAddress == playerAddress) {
-                return i + 1;
+        if (!players[playerAddress].exists) revert PlayerDoesNotExist();
+        
+        uint256 length = topScores.length;
+        // Use unchecked when overflow is impossible (gas optimization)
+        unchecked {
+            for (uint256 i = 0; i < length; i++) {
+                if (topScores[i].playerAddress == playerAddress) {
+                    return i + 1;
+                }
             }
         }
+        
         return 0;
     }
 
-    /**
-     * @dev Get total number of registered players.
-     * @return The count of registered players.
-     */
     function getPlayerCount() external view returns (uint256) {
         return playerAddresses.length;
     }
 
+    function isAuthorizedRelayer(address relayer) external view returns (bool) {
+        return authorizedRelayers[relayer];
+    }
+
     // =============== INTERNAL FUNCTIONS ===============
-    /**
-     * @dev Add a score to a player's history, keeping only recent scores.
-     * @param playerAddress The player's EOA address.
-     * @param score The game score to add.
-     */
-    function addToPlayerScoreHistory(address playerAddress, GameScore memory score) internal {
+    function _addToPlayerScoreHistory(address playerAddress, GameScore memory score) internal {
         GameScore[] storage history = playerScoreHistory[playerAddress];
-        if (history.length >= MAX_PLAYER_SCORE_HISTORY) {
-            for (uint256 i = 0; i < history.length - 1; i++) {
-                history[i] = history[i + 1];
+        uint256 length = history.length;
+        
+        if (length >= MAX_PLAYER_SCORE_HISTORY) {
+            // Shift items to make room (gas optimization using unchecked)
+            unchecked {
+                for (uint256 i = 0; i < length - 1; i++) {
+                    history[i] = history[i + 1];
+                }
             }
             history.pop();
         }
+        
         history.push(score);
     }
 
-    /**
-     * @dev Update the leaderboard with a new score if it qualifies.
-     * @param newScore The new game score.
-     */
-    function updateLeaderboard(GameScore memory newScore) internal {
-        if (topScores.length < MAX_LEADERBOARD_SIZE) {
-            uint256 pos = findInsertionPosition(newScore.score);
+    function _updateLeaderboard(GameScore memory newScore) internal {
+        uint256 length = topScores.length;
+        
+        if (length < MAX_LEADERBOARD_SIZE) {
+            uint256 pos = _findInsertionPosition(newScore.score);
+            
             topScores.push(GameScore({
                 playerAddress: address(0),
                 score: 0,
                 timestamp: 0,
                 replayHash: bytes32(0)
             }));
-            for (uint256 i = topScores.length - 1; i > pos; i--) {
-                topScores[i] = topScores[i - 1];
+            
+            // Shift items to make room
+            unchecked {
+                for (uint256 i = length; i > pos; i--) {
+                    topScores[i] = topScores[i - 1];
+                }
             }
+            
             topScores[pos] = newScore;
-        } else if (newScore.score > topScores[topScores.length - 1].score) {
-            uint256 pos = findInsertionPosition(newScore.score);
-            for (uint256 i = topScores.length - 1; i > pos; i--) {
-                topScores[i] = topScores[i - 1];
+        } else if (newScore.score > topScores[length - 1].score) {
+            uint256 pos = _findInsertionPosition(newScore.score);
+            
+            // Shift items to make room
+            unchecked {
+                for (uint256 i = length - 1; i > pos; i--) {
+                    topScores[i] = topScores[i - 1];
+                }
             }
+            
             topScores[pos] = newScore;
         }
     }
 
-    /**
-     * @dev Find the position to insert a new score using binary search.
-     * @param score The new score.
-     * @return The insertion index.
-     */
-    function findInsertionPosition(uint256 score) internal view returns (uint256) {
+    function _findInsertionPosition(uint256 score) internal view returns (uint256) {
         uint256 left = 0;
         uint256 right = topScores.length;
+        
         while (left < right) {
-            uint256 mid = left + (right - left) / 2;
+            uint256 mid = (left + right) / 2;
             if (topScores[mid].score > score) {
                 left = mid + 1;
             } else {
                 right = mid;
             }
         }
+        
         return left;
+    }
+
+    // Optimized username generation for lower gas
+    function _generateDefaultUsername(address playerAddress) internal pure returns (string memory) {
+        // Fixed prefix "Player_" + last 8 hex chars of address
+        bytes memory result = new bytes(15); // 7 for "Player_" + 8 for hex
+        
+        // Copy "Player_" prefix
+        result[0] = "P";
+        result[1] = "l";
+        result[2] = "a";
+        result[3] = "y";
+        result[4] = "e";
+        result[5] = "r";
+        result[6] = "_";
+        
+        // Extract last 4 bytes of address (8 hex chars)
+        bytes20 addrBytes = bytes20(playerAddress);
+        
+        // Optimize for gas by using bitwise operations and direct assignment
+        unchecked {
+            for (uint256 i = 0; i < 4; i++) {
+                uint8 b = uint8(addrBytes[16 + i]); // last 4 bytes
+                result[7 + i*2] = _getHexChar(b >> 4); // high nibble
+                result[8 + i*2] = _getHexChar(b & 0x0f); // low nibble
+            }
+        }
+        
+        return string(result);
+    }
+    
+    // Gas-optimized hex conversion
+    function _getHexChar(uint8 value) internal pure returns (bytes1) {
+        // Using inline assembly for the most gas-efficient conversion
+        bytes1 c;
+        assembly {
+            // Add '0' (48) for 0-9, or 'a'-10 (97-10=87) for a-f
+            c := add(add(value, mul(lt(value, 10), 48)), mul(iszero(lt(value, 10)), 87))
+        }
+        return c;
     }
 }

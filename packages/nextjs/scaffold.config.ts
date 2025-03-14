@@ -19,6 +19,7 @@ const monadTestnet: Chain = {
     name: "Monad",
     symbol: "MON",
     decimals: 18,
+    version: 1, // Added version property
   },
   rpcUrls: {
     default: { http: ["https://testnet-rpc.monad.xyz"] },

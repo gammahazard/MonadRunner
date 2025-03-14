@@ -7,12 +7,67 @@ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
 const deployedContracts = {
   10143: {
     MonadRunnerGame: {
-      address: "0xb59916B6C83982609329a22923b54EB4FbC31EF9",
+      address: "0x3C3372f01bBfEcE65be20e9ceA439b6eFb1dE8e6",
       abi: [
         {
           inputs: [],
           stateMutability: "nonpayable",
           type: "constructor",
+        },
+        {
+          inputs: [],
+          name: "InvalidRelayerAddress",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "InvalidSmartAccount",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "NotAnAuthorizedRelayer",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "OnlyAuthorizedRelayer",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "OnlyOwner",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "OnlyRegisteredPlayer",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "PlayerAlreadyRegistered",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "PlayerDoesNotExist",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "ReplayAlreadyExists",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "UsernameEmpty",
+          type: "error",
+        },
+        {
+          inputs: [],
+          name: "UsernameTooLong",
+          type: "error",
         },
         {
           anonymous: false,
@@ -31,6 +86,32 @@ const deployedContracts = {
             },
           ],
           name: "PlayerRegistered",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
+            {
+              indexed: true,
+              internalType: "address",
+              name: "relayer",
+              type: "address",
+            },
+          ],
+          name: "RelayerAdded",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
+            {
+              indexed: true,
+              internalType: "address",
+              name: "relayer",
+              type: "address",
+            },
+          ],
+          name: "RelayerRemoved",
           type: "event",
         },
         {
@@ -122,39 +203,32 @@ const deployedContracts = {
           type: "event",
         },
         {
-          inputs: [],
-          name: "MAX_LEADERBOARD_SIZE",
-          outputs: [
+          inputs: [
             {
-              internalType: "uint256",
-              name: "",
-              type: "uint256",
+              internalType: "address",
+              name: "relayer",
+              type: "address",
             },
           ],
-          stateMutability: "view",
+          name: "addRelayer",
+          outputs: [],
+          stateMutability: "nonpayable",
           type: "function",
         },
         {
-          inputs: [],
-          name: "MAX_PLAYER_SCORE_HISTORY",
-          outputs: [
+          inputs: [
             {
-              internalType: "uint256",
+              internalType: "address",
               name: "",
-              type: "uint256",
+              type: "address",
             },
           ],
-          stateMutability: "view",
-          type: "function",
-        },
-        {
-          inputs: [],
-          name: "MAX_USERNAME_LENGTH",
+          name: "authorizedRelayers",
           outputs: [
             {
-              internalType: "uint256",
+              internalType: "bool",
               name: "",
-              type: "uint256",
+              type: "bool",
             },
           ],
           stateMutability: "view",
@@ -321,6 +395,25 @@ const deployedContracts = {
           type: "function",
         },
         {
+          inputs: [
+            {
+              internalType: "address",
+              name: "relayer",
+              type: "address",
+            },
+          ],
+          name: "isAuthorizedRelayer",
+          outputs: [
+            {
+              internalType: "bool",
+              name: "",
+              type: "bool",
+            },
+          ],
+          stateMutability: "view",
+          type: "function",
+        },
+        {
           inputs: [],
           name: "owner",
           outputs: [
@@ -347,45 +440,6 @@ const deployedContracts = {
               internalType: "address",
               name: "",
               type: "address",
-            },
-          ],
-          stateMutability: "view",
-          type: "function",
-        },
-        {
-          inputs: [
-            {
-              internalType: "address",
-              name: "",
-              type: "address",
-            },
-            {
-              internalType: "uint256",
-              name: "",
-              type: "uint256",
-            },
-          ],
-          name: "playerScoreHistory",
-          outputs: [
-            {
-              internalType: "address",
-              name: "playerAddress",
-              type: "address",
-            },
-            {
-              internalType: "uint256",
-              name: "score",
-              type: "uint256",
-            },
-            {
-              internalType: "uint256",
-              name: "timestamp",
-              type: "uint256",
-            },
-            {
-              internalType: "bytes32",
-              name: "replayHash",
-              type: "bytes32",
             },
           ],
           stateMutability: "view",
@@ -452,6 +506,37 @@ const deployedContracts = {
             },
           ],
           name: "registerSmartAccount",
+          outputs: [],
+          stateMutability: "nonpayable",
+          type: "function",
+        },
+        {
+          inputs: [
+            {
+              internalType: "address",
+              name: "playerAddress",
+              type: "address",
+            },
+            {
+              internalType: "address",
+              name: "smartAccount",
+              type: "address",
+            },
+          ],
+          name: "registerSmartAccountFor",
+          outputs: [],
+          stateMutability: "nonpayable",
+          type: "function",
+        },
+        {
+          inputs: [
+            {
+              internalType: "address",
+              name: "relayer",
+              type: "address",
+            },
+          ],
+          name: "removeRelayer",
           outputs: [],
           stateMutability: "nonpayable",
           type: "function",

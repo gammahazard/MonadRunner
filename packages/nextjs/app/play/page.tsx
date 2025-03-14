@@ -1,15 +1,16 @@
 "use client";
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { NextPage } from "next";
 import { useAccount } from "wagmi";
 import { Address } from "~~/components/scaffold-eth";
 import UsernameModal from "~~/components/UsernameModal";
 import dynamicImport from "next/dynamic";
 import ReplayListModal from "~~/components/ReplayListModal";
-// Import our new contract hook
-import { useMonadRunnerContract, GameScore } from "~~/hooks/useMonadRunnerContract";
+import AABanner from "~~/components/AABanner";
+// Import our AA-enabled contract hook with the correct name
+import useMonadRunnerContractWithAA, { GameScore } from "~~/hooks/useMonadRunnerContractWithAA";
 
 const MonadRunnerNoSSR = dynamicImport(() => import("~~/components/MonadRunner"), {
   ssr: false,
@@ -58,7 +59,8 @@ const Play: NextPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedReplay, setSelectedReplay] = useState<ReplayData | null>(null);
 
-  // Use our contract hook
+  // Use our AA-enabled contract hook
+  
   const {
     isRegistered,
     playerData,
@@ -67,55 +69,76 @@ const Play: NextPage = () => {
     playerScoreHistory,
     registerPlayer,
     updateUsername,
-    submitScore
-  } = useMonadRunnerContract();
-
+    submitScore,
+    isAAEnabled,
+    aaAddress,
+    effectiveAddress
+  } = useMonadRunnerContractWithAA();
+  useEffect(() => {
+    const handleAAStatusChange = (event: CustomEvent) => {
+      console.log("AA Status Changed in Home Page:", event.detail);
+      // If you have any refresh methods, call them here
+    };
+  
+    // Add event listener
+    window.addEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+  
+    // Cleanup listener
+    return () => {
+      window.removeEventListener('aa-status-changed', handleAAStatusChange as EventListener);
+    };
+  }, []);
   // Set mounted flag once on client
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Update leaderboard data when topScores changes
+  const computedLeaderboard = useMemo(() => {
+    if (!topScores) return [];
+    return topScores.map((score, index) => ({
+      rank: index + 1,
+      walletAddress: score.playerAddress,
+      username: playerData?.username || "Player",
+      highScore: Number(score.score),
+    }));
+  }, [topScores, playerData]);
+  
+  // 2. Update leaderboard state only if it’s different.
   useEffect(() => {
-    if (topScores) {
-      const formattedLeaderboard = topScores.map((score, index) => ({
-        rank: index + 1,
-        walletAddress: score.playerAddress,
-        username: playerData?.username || "Player",
-        highScore: Number(score.score)
-      }));
-      setLeaderboardData(formattedLeaderboard);
+    // Do a simple deep equality check by converting to JSON strings.
+    const newLeaderboard = JSON.stringify(computedLeaderboard);
+    const prevLeaderboard = JSON.stringify(leaderboardData);
+    if (newLeaderboard !== prevLeaderboard) {
+      setLeaderboardData(computedLeaderboard);
       setLoadingLeaderboard(false);
     }
-  }, [topScores, playerData]);
-
-  // Update user stats when playerData changes
-  useEffect(() => {
-    if (playerData && connectedAddress) {
-      setUserStats({
-        walletAddress: connectedAddress,
+  }, [computedLeaderboard, leaderboardData]);
+  
+  // 3. Compute user stats with useMemo.
+  const computedUserStats = useMemo(() => {
+    if (playerData && effectiveAddress) {
+      return {
+        walletAddress: effectiveAddress,
         username: playerData.username,
         highScore: Number(playerData.highScore),
         timesPlayed: Number(playerData.timesPlayed),
-        rank: playerRank || 0
-      });
+        rank: playerRank || 0,
+      };
+    }
+    return null;
+  }, [playerData, effectiveAddress, playerRank]);
+  
+  // 4. Update user stats state only if it’s changed.
+  useEffect(() => {
+    const newStats = JSON.stringify(computedUserStats);
+    const prevStats = JSON.stringify(userStats);
+    if (newStats !== prevStats) {
+      setUserStats(computedUserStats);
       setLoadingUserStats(false);
     }
-  }, [playerData, connectedAddress, playerRank]);
-
-  // Update recent games when playerScoreHistory changes
-  useEffect(() => {
-    if (playerScoreHistory) {
-      const formattedRecentGames = playerScoreHistory
-        .map(score => ({
-          time: formatTimestamp(Number(score.timestamp)),
-          score: Number(score.score)
-        }))
-        .sort((a, b) => b.score - a.score);
-      setRecentGames(formattedRecentGames);
-    }
-  }, [playerScoreHistory]);
-
+  }, [computedUserStats, userStats]);
+  
+  // 5. Finally, update isLoading only when both flags are done.
   useEffect(() => {
     if (!loadingLeaderboard && !loadingUserStats) {
       setIsLoading(false);
@@ -223,12 +246,28 @@ const Play: NextPage = () => {
         <div>Loading...</div>
       ) : (
         <div className="flex items-center flex-col flex-grow pt-10 pb-16">
+          {/* Show AA Banner for users who haven't enabled it yet */}
+          {connectedAddress && <AABanner />}
+          
           {connectedAddress ? (
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 w-full max-w-6xl px-4">
               {/* Game area */}
               <div className="lg:col-span-3 glass backdrop-blur-md p-6 rounded-xl border border-base-300">
                 <div className="mb-6 flex justify-between items-center">
-                  <h2 className="text-2xl font-bold text-secondary">Monad Runner <span className="text-sm font-normal bg-accent/30 px-2 py-1 rounded-md">On-Chain</span></h2>
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-bold text-secondary">Monad Runner <span className="text-sm font-normal bg-accent/30 px-2 py-1 rounded-md">On-Chain</span></h2>
+                    
+                    {/* Show AA status if enabled */}
+                    {isAAEnabled && aaAddress && (
+                      <div className="badge badge-success gap-1 text-xs">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="inline-block w-3 h-3 stroke-current">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        Gasless Mode
+                      </div>
+                    )}
+                  </div>
+                  
                   <div className="glass p-2 rounded-lg">
                     <Address address={connectedAddress} />
                   </div>
@@ -263,7 +302,7 @@ const Play: NextPage = () => {
                   </div>
                 ) : gameStarted ? (
                   <MonadRunnerNoSSR
-                    walletAddress={connectedAddress}
+                    walletAddress={effectiveAddress ?? connectedAddress ?? ""} // Add fallbacks
                     username={playerData?.username || userStats?.username || "Player"}
                     onGameEnd={(score, replayData) => handleGameEnd(score, replayData)}
                     onClose={() => setGameStarted(false)}
@@ -295,22 +334,20 @@ const Play: NextPage = () => {
                         ? "Your progress is stored on the Monad blockchain" 
                         : "You'll need to register on-chain before playing"}
                     </div>
+                    
+                    {/* Show AA benefits if enabled */}
+                    {isAAEnabled && (
+                      <div className="mt-2 text-xs text-success">
+                        Gasless transactions enabled - play without paying gas fees!
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Replay buttons */}
                 <div className="text-center mt-6 flex justify-center gap-4">
                   <div className="text-center mt-6">
-                    <button
-                      className="btn btn-outline btn-secondary btn-sm"
-                      onClick={() => {
-                        setSelectedReplay(null);
-                        setShowReplayModal(true);
-                        localStorage.setItem("replayFilter", connectedAddress ? "user" : "all");
-                      }}
-                    >
-                      View Games
-                    </button>
+                  
                   </div>
                 </div>
               </div>
@@ -387,6 +424,11 @@ const Play: NextPage = () => {
                   <p className="m-0 text-xs text-center">
                     All scores and gameplay data are stored on the Monad blockchain!
                   </p>
+                  {isAAEnabled && (
+                    <p className="m-0 mt-1 text-xs text-center text-success">
+                      Gasless mode enabled - no transaction fees!
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -416,7 +458,9 @@ const Play: NextPage = () => {
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
               <div className="bg-base-100 p-6 rounded-xl shadow-xl flex flex-col items-center">
                 <div className="loading loading-spinner loading-lg text-secondary mb-4"></div>
-                <p className="text-lg font-medium">Submitting to blockchain...</p>
+                <p className="text-lg font-medium">
+                  {isAAEnabled ? "Submitting gasless transaction..." : "Submitting to blockchain..."}
+                </p>
               </div>
             </div>
           )}
