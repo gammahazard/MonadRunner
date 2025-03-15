@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { useAA } from "~~/providers/AAProvider";
 import { useAccount } from "wagmi";
 import useMonadRunnerContractWithAA from "~~/hooks/useMonadRunnerContractWithAA";
@@ -8,10 +8,38 @@ import { AA_STATUS_EVENT } from "~~/hooks/useAAWallet";
 
 const AABanner: React.FC = () => {
   const { isConnected, address: connectedAddress } = useAccount();
-  const { isAAEnabled, isEnabling, showEnableModal } = useAA();
+  const { isAAEnabled, isEnabling, showEnableModal, checkAAStatus } = useAA();
   const { isRegistered } = useMonadRunnerContractWithAA();
   
   const [isButtonDisabled, setIsButtonDisabled] = useState(false);
+  const [loading, setLoading] = useState(true); // Declare at top level
+  const previousAddressRef = useRef<string | null>(null);
+  
+  // Check if wallet changed and force a fresh status check
+  useEffect(() => {
+    if (isConnected && connectedAddress) {
+      if (previousAddressRef.current && 
+          previousAddressRef.current !== connectedAddress &&
+          previousAddressRef.current.toLowerCase() !== connectedAddress.toLowerCase()) {
+        console.log("Wallet changed in AABanner, forcing fresh status check");
+        
+        // Force loading state while we check
+        setLoading(true);
+        
+        // Use timeout to avoid state updates during render
+        setTimeout(() => {
+          // Force a blockchain check to update UI with new wallet status
+          checkAAStatus(true);
+        }, 500);
+      }
+      
+      // Update reference
+      previousAddressRef.current = connectedAddress;
+    } else {
+      // Reset when disconnected
+      previousAddressRef.current = null;
+    }
+  }, [isConnected, connectedAddress, checkAAStatus]);
 
   // Define the handler outside of any conditional logic
   const handleEnableClick = useCallback(() => {
@@ -25,8 +53,6 @@ const AABanner: React.FC = () => {
       setTimeout(() => setIsButtonDisabled(false), 1000);
     }
   }, [showEnableModal]);
-
-  const [loading, setLoading] = useState(true);
   
   // Effect for loading state with longer delay
   useEffect(() => {
@@ -34,8 +60,14 @@ const AABanner: React.FC = () => {
       // Set a much longer timeout to wait for status check
       // This ensures we don't show the banner prematurely
       const timer = setTimeout(() => {
-        setLoading(false);
-      }, 5000); // 5 seconds should be enough for most API calls to complete
+        // Check one more time before showing banner
+        checkAAStatus(true);
+        
+        // Set loading to false after a delay
+        setTimeout(() => {
+          setLoading(false);
+        }, 1000);
+      }, 8000); // 8 seconds should be enough for most API calls to complete
       
       // Also listen for AA status events to stop loading early if we get a response
       const handleAAStatusEvent = (event: Event) => {
@@ -46,6 +78,14 @@ const AABanner: React.FC = () => {
         if (detail && detail.isEnabled === true) {
           console.log("AA is enabled from event, keeping banner hidden");
           setLoading(true);
+          
+          // If we receive a forceRefresh flag, reload the page
+          if (detail.forceRefresh) {
+            console.log("Received force refresh flag, reloading page");
+            setTimeout(() => {
+              window.location.reload();
+            }, 500);
+          }
         } else {
           // Otherwise, stop loading to show the banner
           setTimeout(() => {
@@ -87,8 +127,10 @@ const AABanner: React.FC = () => {
                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
         </svg>
         <div>
-          <h3 className="font-bold">Play without gas fees or signing!</h3>
-          <div className="text-xs">Enable Account Abstraction to enjoy gasless transactions on Monad.</div>
+          <>
+            <h3 className="font-bold">Play without gas fees or signing!</h3>
+            <div className="text-xs">Enable Account Abstraction to enjoy gasless transactions on Monad.</div>
+          </>
         </div>
       </div>
       <div className="flex-none">

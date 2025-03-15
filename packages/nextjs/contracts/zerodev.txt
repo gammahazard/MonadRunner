@@ -1,0 +1,809 @@
+Creating a Smart Account
+Impatient? Check out a complete example here.
+
+At the core of account abstraction is the smart account -- an account powered by a smart contract. ZeroDev is built on Kernel, a modular smart account that can be customized with plugins.
+
+When you create a Kernel account, you set it up with a validator, which is a type of plugin that handles how the account validates UserOps. In this tutorial, we will be using the ECDSA validator, which works like a normal EOA by validating signatures from a ECDSA private key. ZeroDev supports other validators such as passkeys and multisig.
+
+We will be using a local private key, but the ECDSA validator also works with third-party auth providers.
+
+Installation
+npm
+yarn
+pnpm
+bun
+
+npm i @zerodev/sdk @zerodev/ecdsa-validator
+API
+Picking an EntryPoint
+Currently there are two versions of ERC-4337 that are used in production. They are referred to as "EntryPoint 0.6" and "EntryPoint 0.7", where "EntryPoint" refers to the singleton ERC-4337 contract.
+
+If you are building a new application, we recommend using EntryPoint 0.7 (Kernel v3), which gives you the latest and greatest features and optimizations. If you already have an application using EntryPoint 0.6 (Kernel v2), just stick with it -- it will be supported indefinitely.
+
+In this tutorial, we will use EntryPoint 0.7. Start by selecting an EntryPoint:
+
+
+const entryPoint = getEntryPoint("0.7")
+Picking a Kernel version
+Kernel is the smart account that ZeroDev builds on. ZeroDev SDK used to implicitly use the latest version of Kernel, which has caused some compatibility issues when people upgrade the SDK. Therefore, starting from ZeroDev SDK v5.3, we require that you explicitly specify the Kernel version. This is how you generally should choose:
+
+If you had already been in production with ZeroDev SDK v4 or lower, use Kernel version 2.4 with EntryPoint 0.6.
+If you had already been in production with ZeroDev SDK v5, use Kernel version 3.0 with EntryPoint 0.7.
+If you are still in development or starting a new project, use Kernel version 3.1 with EntryPoint 0.7.
+
+import { KERNEL_V3_1 } from "@zerodev/sdk/constants"
+ 
+const kernelVersion = KERNEL_V3_1
+Creating a public client
+In Viem, a public client is an interface to a JSON-RPC API such as Infura or Alchemy.
+
+
+import { createPublicClient, http } from "viem"
+import { base } from 'viem/chains'
+ 
+const publicClient = createPublicClient({
+  // In production, you will want to set your RPC provider here (e.g. Infura/Alchemy).
+  transport: http(),
+  chain: base,
+})
+Creating a signer
+As aforementioned, a Kernel account using a ECDSA validator is "owned" by a signer, which is anything that can sign messages with a private key.
+
+Since Kernel is built on top of Viem, we can use any Viem account as the signer. In this example, we create a signer from a private key:
+
+
+import { Hex } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
+ 
+const signer = privateKeyToAccount("PRIVATE_KEY" as Hex)
+Replace PRIVATE_KEY with an actual private key. You can generate a random one here.
+
+Creating a ECDSA validator
+Then create a ECDSA validator from the signer:
+
+
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+ 
+const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+  signer,
+  entryPoint,
+  kernelVersion
+})
+Create a Kernel account
+Next, create a Kernel account with the ECDSA validator:
+
+
+import { createKernelAccount } from "@zerodev/sdk"
+ 
+const account = await createKernelAccount(publicClient, {
+  plugins: {
+    sudo: ecdsaValidator,
+  },
+  entryPoint,
+  kernelVersion
+})
+Create an account client
+Now that we have an account, we can finally construct an "account client," which is the equivalent of a wallet client in Viem that allows you to send UserOps to bundlers.
+
+
+import { createKernelAccountClient } from "@zerodev/sdk"
+import { http } from "viem"
+import { base } from 'viem/chains'
+ 
+const kernelClient = createKernelAccountClient({
+  account,
+ 
+  // Replace with your chain
+  chain: base,
+ 
+  // Replace with your bundler RPC.
+  // For ZeroDev, you can find the RPC on your dashboard.
+  bundlerTransport: http('BUNDLER_RPC'),
+ 
+  // Required - the public client
+  client: publicClient,
+ 
+  // Optional -- only if you want to use a paymaster
+  paymaster: {
+    getPaymasterData(userOperation) {
+      return paymasterClient.sponsorUserOperation({userOperation})
+    }  
+  },
+ 
+  // Required - the default gas prices might be too high
+  userOperation: {
+    estimateFeesPerGas: async ({bundlerClient}) => {
+      return getUserOperationGasPrice(bundlerClient)
+    }
+  }
+})
+Note that:
+
+You need to replace the BUNDLER_RPC with an actual bundler RPC.
+For ZeroDev, you can find the RPC on your dashboard.
+You need to make sure to set the right chain.
+paymaster only needs to be specified if you want to use a paymaster.
+Now you are ready to do things with your smart account, like sending UserOps!
+
+FAQs
+When I create an account, is it deployed on-chain?
+No. If your account hasn't been deployed yet, we simply use CREATE2 to compute the address that the account would be deployed to. Your account is deployed automatically with the first UserOp it sends.
+
+In other words, "creating" accounts with the SDK is free -- you can create an infinite number of such account objects without paying any gas. It's only when you send the first UserOp that the account is deployed automatically.
+
+Can I create multiple accounts from the same EOA signer?
+Yes, you can do so by providing an index when you create the account object.
+
+
+import { createKernelAccount } from "@zerodev/sdk"
+ 
+const account = createKernelAccount(publicClient, {
+  // other options...
+ 
+  // optionally specify the index; different indexes will yield different accounts
+  index: 1,
+})
+How do I get the smart account address from the EOA signer address?
+Sometimes you only know the address of the EOA signer but you don't have the signer itself. In that case, you can still compute the address of the smart account with this helper function:
+
+
+import { getKernelAddressFromECDSA } from "@zerodev/ecdsa-validator"
+ 
+// index is 0 by default
+const smartAccountAddress = await getKernelAddressFromECDSA(publicClient, eoaAddress, index)
+How do I get the EOA signer address from the smart account address?
+You can query it on-chain like this:
+
+
+import { getValidatorAddress } from "@zerodev/ecdsa-validator"
+ 
+const ecdsaValidatorContract = getContract({
+  abi: [
+    {
+      type: "function",
+      name: "ecdsaValidatorStorage",
+      inputs: [{ name: "", type: "address", internalType: "address" }],
+      outputs: [{ name: "owner", type: "address", internalType: "address" }],
+      stateMutability: "view",
+    },
+  ],
+  address: getValidatorAddress(entryPoint, kernelVersion),
+  client: publicClient,
+})
+ 
+const owner = await ecdsaValidatorContract.read.ecdsaValidatorStorage([
+  account.address,
+])
+How do I create a Kernel account object with a specific address?
+Normally, you don't need to manually specify an address because the smart account address is computed from your signer data. However, if you have changed the signer, then you may need to manually specify the smart account address.
+
+You can do it like this:
+
+
+const account = await createKernelAccount(publicClient, {
+  address: "address",
+  // ...other args
+})
+
+uickstart
+Create a new project with npm (or whatever package manager you use):
+
+
+mkdir zerodev
+cd zerodev
+npm init -y
+Install the ZeroDev SDK and a plugin:
+
+
+npm i @zerodev/sdk @zerodev/ecdsa-validator
+Install dev packages for TypeScript:
+
+
+npm i --save-dev @types/node tslib
+Create the following tsconfig.json (TypeScript config):
+
+
+{
+  "compilerOptions": {
+    "target": "es5",
+    "module": "commonjs",
+    "declaration": true,
+    "outDir": "./lib",
+    "strict": true,
+    "esModuleInterop": true
+  },
+  "include": ["./**/*.ts"]
+}
+Create a script index.ts with the following code:
+
+
+import { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient, getUserOperationGasPrice } from "@zerodev/sdk"
+import { KERNEL_V3_1, getEntryPoint } from "@zerodev/sdk/constants"
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+import { http, createPublicClient, zeroAddress } from "viem"
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+import { baseSepolia } from "viem/chains"
+ 
+const PROJECT_ID = 'c5c1e190-8845-40e9-b6b8-9ec3fadc4e8f'
+const BUNDLER_RPC = `https://rpc.zerodev.app/api/v2/bundler/${PROJECT_ID}`
+const PAYMASTER_RPC = `https://rpc.zerodev.app/api/v2/paymaster/${PROJECT_ID}`
+ 
+const chain = baseSepolia 
+const entryPoint = getEntryPoint("0.7")
+const kernelVersion = KERNEL_V3_1
+ 
+const main = async () => {
+  // Construct a signer
+  const privateKey = generatePrivateKey()
+  const signer = privateKeyToAccount(privateKey)
+ 
+  // Construct a public client
+  const publicClient = createPublicClient({
+    // Use your own RPC provider in production (e.g. Infura/Alchemy).
+    transport: http(BUNDLER_RPC),
+    chain
+  })
+ 
+  // Construct a validator
+  const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+    signer,
+    entryPoint,
+    kernelVersion
+  })
+ 
+  // Construct a Kernel account
+  const account = await createKernelAccount(publicClient, {
+    plugins: {
+      sudo: ecdsaValidator,
+    },
+    entryPoint,
+    kernelVersion
+  })
+ 
+  const zerodevPaymaster = createZeroDevPaymasterClient({
+    chain,
+    transport: http(PAYMASTER_RPC),
+  })
+ 
+  // Construct a Kernel account client
+  const kernelClient = createKernelAccountClient({
+    account,
+    chain,
+    bundlerTransport: http(BUNDLER_RPC),
+    // Required - the public client
+    client: publicClient,
+    paymaster: {
+        getPaymasterData(userOperation) {
+            return zerodevPaymaster.sponsorUserOperation({userOperation})
+        }
+    },
+ 
+    // Required - the default gas prices might be too high
+    userOperation: {
+      estimateFeesPerGas: async ({bundlerClient}) => {
+          return getUserOperationGasPrice(bundlerClient)
+      }
+    }
+  })
+ 
+  const accountAddress = kernelClient.account.address
+  console.log("My account:", accountAddress)
+ 
+  // Send a UserOp
+  const userOpHash = await kernelClient.sendUserOperation({
+      callData: await kernelClient.account.encodeCalls([{
+        to: zeroAddress,
+        value: BigInt(0),
+        data: "0x",
+      }]),
+  })
+ 
+  console.log("UserOp hash:", userOpHash)
+  console.log("Waiting for UserOp to complete...")
+ 
+  await kernelClient.waitForUserOperationReceipt({
+    hash: userOpHash,
+    timeout: 1000 * 15,
+  })
+ 
+  console.log("UserOp completed: https://base-sepolia.blockscout.com/op/" + userOpHash)
+ 
+  process.exit()
+}
+ 
+main()
+Run it:
+
+
+npx ts-node index.ts
+You should see an output like this:
+
+
+My account: 0xaf731E22Fe96979C5D864B07bad0EB999cDBbE76
+UserOp hash: 0x7a8e0ba961cc0a34f745b81d64766f033269fee831104fee0269fa5bcc397dcb
+Waiting for UserOp to complete...
+View completed UserOp here: https://jiffyscan.xyz/userOpHash/0x7a8e0ba961cc0a34f745b81d64766f033269fee831104fee0269fa5bcc397dcb
+Congrats -- you just sent your first gasless transaction with ZeroDev!
+
+In this example, you used a public ZeroDev API key. Now read the tutorial to see how to set up your own ZeroDev project.
+
+ZeroDev Tutorial
+Impatient? Check out the complete example here.
+
+In this tutorial, we will mint an NFT without paying gas. We assume that you have a high-level understanding of AA concepts such as bundlers, paymasters, and UserOp; if not, read the introduction first.
+
+Create a ZeroDev Project
+For this tutorial, we will use ZeroDev's AA infra, but you can use ZeroDev with any AA infra provider.
+
+Go to the ZeroDev dashboard and create a project for Sepolia.
+
+
+
+
+
+We will be using the "Project ID" in the next steps.
+
+Set up a gas policy
+With ZeroDev, by default you are not sponsoring UserOps. To sponsor UserOps, you need to set up a gas policy.
+
+Go to the "Gas Policies" section of your dashboard and create a new "Project Policy":
+
+
+
+From now on, when you use the paymaster RPC from the previous step, the paymaster will sponsor UserOps according to the policy you just set up, which in this case is up to 100 UserOps per minute.
+
+Write the code
+Clone the ZeroDev examples repo. Then, inside the directory, install all dependencies:
+
+
+npm install
+Create a .env file with the following line:
+
+
+ZERODEV_PROJECT_ID=<YOUR_PROJECT_ID>
+Replacing <YOUR_PROJECT_ID> with your actual project ID from the dashboard, and make sure you are using a project ID for Sepolia.
+
+If all goes well, you should be able to run:
+
+
+npx ts-node tutorial/completed.ts
+Now open the tutorial/template.ts file in your editor. This will be the template where you will write your code. You can always refer to tutorial/completed.ts to see the completed tutorial code.
+
+Create a signer
+Kernel accounts support many different signing methods, including ECDSA keys and passkeys. In this tutorial, we will use ECDSA keys which are the same type of keys that MetaMask and other Ethereum wallets use.
+
+Let's start by generating a random key. Add the following code to the main function:
+
+
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+ 
+const main = async () => {
+  const privateKey = generatePrivateKey()  
+  const signer = privateKeyToAccount(privateKey)  
+}
+Create a validator
+Each Kernel account handles validation through a smart contract known as a "validator." In this case, we will be using the ECDSA validator.
+
+Add the following code to create the ECDSA validator:
+
+
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+ 
+const main = async () => {
+  // other code...
+ 
+  const ecdsaValidator = await signerToEcdsaValidator(publicClient, { 
+    signer,  
+    entryPoint,  
+  })  
+}
+Create an account
+We are now ready to create an account. Add the following code:
+
+
+import { createKernelAccount } from "@zerodev/sdk"
+ 
+const main = async () => {
+  // other code...
+ 
+  const account = await createKernelAccount(publicClient, {  
+    plugins: {  
+      sudo: ecdsaValidator,  
+    },  
+    entryPoint,  
+  })  
+}
+Creating a Kernel client
+Finally, we are going to create an "account client" which serves as the connection between your account and some AA infra (i.e. bundlers and paymasters). The connection is necessary for you to actually send UserOps.
+
+Add the following code:
+
+
+const main = async () => {
+  // ... other code
+ 
+  const zerodevPaymaster = createZeroDevPaymasterClient({
+    chain,
+    transport: http(PAYMASTER_RPC),
+  })
+ 
+  const kernelClient = createKernelAccountClient({
+    account,
+    chain,
+    bundlerTransport: http(BUNDLER_RPC),
+    client: publicClient,
+    paymaster: {
+        getPaymasterData(userOperation) {
+            return zerodevPaymaster.sponsorUserOperation({userOperation})
+        }
+    },
+    userOperation: {
+      estimateFeesPerGas: async ({bundlerClient}) => {
+          return getUserOperationGasPrice(bundlerClient)
+      }
+    }
+  })
+ 
+  const accountAddress = kernelClient.account.address
+  console.log("My account:", accountAddress)
+}
+Run this script with npx ts-node tutorial/template.ts and confirm that it prints an address.
+
+Send a UserOp
+Now that you have an account client, it's time to send your first UserOp! For this tutorial, we will mint an NFT from a contract deployed on Sepolia.
+
+Add the following import and code:
+
+
+import { encodeFunctionData } from "viem"
+ 
+const main = async () => {
+  // ... other code
+ 
+  const userOpHash = await kernelClient.sendUserOperation({
+      callData: await kernelClient.account.encodeCalls([{
+        to: contractAddress,
+        value: BigInt(0),
+        data: encodeFunctionData({
+          abi: contractABI,
+          functionName: "mint",
+          args: [accountAddress],
+        })
+      }])
+  })
+  console.log("Submitted UserOp:", userOpHash)
+}
+There's quite a bit of code going on, so let's go through it.
+
+We start by calling kernelClient.sendUserOperation, which takes a userOperation argument.
+Inside userOperation, we specify a callData field. This is the equivalent of the calldata field for a normal Ethereum transaction.
+Since we want to call the mint(address) function on the NFT contract, we use Viem's helper function encodeFunctionData and give it the ABI, function name, and function argument.
+kernelClient.sendUserOperation returns a "UserOperation hash." This is the equivalent of a transaction hash but for a UserOp.
+Run the script again with npx ts-node tutorial/template.ts and confirm that it prints the UserOp hash. At this point, you can go to a UserOp explorer such as JiffyScan and find your UserOp with the hash!
+
+Waiting for the UserOp
+When you call sendUserOperation, the call returns as soon as the UserOp has been submitted to the bundler, but it doesn't wait for the UserOp to be "confirmed" on-chain. To wait for the UserOp to be confirmed, add the following import and code:
+
+
+ 
+const main = async () => {
+  // ... other code
+ 
+  const receipt = await kernelClient.waitForUserOperationReceipt({
+    hash: userOpHash,
+  })
+  console.log("UserOp confirmed:", receipt.userOpHash)
+}
+Let's break down the code:
+
+waitForUserOperationReceipt is a bundler action. If you are unfamiliar with the concept of "actions," you can read more about it on Viem's documentation.
+This function returns a "receipt" object. If you are curious, you can print the full object and see what it contains.
+Read contract state
+Now let's confirm that we actually minted an NFT. Add the following import and code:
+
+
+import { publicActions } from "viem"
+ 
+const main = async () => {
+  // ... other code
+ 
+  const nftBalance = await publicClient.readContract({
+    address: contractAddress,
+    abi: contractABI,
+    functionName: 'balanceOf',
+    args: [accountAddress],
+  })
+  console.log(`NFT balance: ${nftBalance}`)
+}
+Run the script again. You should see that it prints NFT balance: 1, confirming that you have minted an NFT!
+
+Next steps
+In this tutorial, we were able to mint an NFT without paying gas, thanks to gas sponsorship.
+
+For next steps:
+
+Check out the core API to learn more about the SDK
+Read some code examples of using ZeroDev
+
+In version 5.4.x of the @zerodev/sdk, we've migrated to using viem@2.18.x with native Account Abstraction (AA) modules instead of the permissionless package. This change brings significant updates to types, imports, function signatures, and overall API usage.
+
+This guide will help you migrate your codebase to be compatible with the new version.
+
+Update dependencies
+Remove the permissionless package:
+
+
+npm uninstall permissionless
+Ensure you have viem@^2.21.40 version
+Update permissionless Account Abstractions
+Replace any imports from permissionless with the equivalent from viem/account-abstraction or @zerodev/sdk if applicable.
+
+Update Type Definitions
+Replace EntryPoint Types
+
+
+import type { EntryPoint } from 'permissionless/types'; 
+import type { EntryPointVersion } from 'viem/account-abstraction'; 
+Replace UserOperation Types
+
+
+import type { UserOperation } from 'permissionless/types'; 
+import type { UserOperation } from 'viem/account-abstraction'; 
+Replaced entryPoint: Address with entryPoint: { address: Address; version: EntryPointVersion}
+For createKernelAccount and signerToEcdsaValidator among other plugins, replace the entryPoint parameter as shown:
+
+
+import { getEntryPoint } from "@zerodev/sdk/constants"; 
+createKernelAccount(publicClient, {
+  // ...
+  entryPoint: ENTRYPOINT_ADDRESS_V07, 
+  entryPoint: getEntryPoint("0.7"), 
+})
+
+signerToEcdsaValidator(publicClient, {
+  // ...
+  entryPoint: ENTRYPOINT_ADDRESS_V07, 
+  entryPoint: getEntryPoint("0.7"), 
+})
+Removed entryPoint from createKernelAccountClient
+
+  const kernelClient = createKernelAccountClient({
+    entryPoint, 
+    // ...
+  });
+Replaced middleware.sponsorUserOperation from createKernelAccountClient with paymaster.getPaymasterData
+
+  const kernelClient = createKernelAccountClient({
+    middleware: { 
+		  sponsorUserOperation: paymasterClient.sponsorUserOperation, 
+	  }, 
+    paymaster: { 
+      getPaymasterData(userOperation) { 
+        return paymasterClient.sponsorUserOperation({ userOperation }) 
+      } 
+    } 
+    // ...
+  });
+Added client to createKernelAccountClient
+client is now required in createKernelAccountClient.
+
+
+  const kernelClient = createKernelAccountClient({
+    client: publicClient, 
+    // ...
+  });
+Added estimateFeesPerGas to userOperation in createKernelAccountClient
+estimateFeesPerGas is now required in userOperation in createKernelAccountClient to estimate the gas price for the user operation. The default gas prices might be too high, so it's recommended to use this function to estimate the gas price.
+
+
+  const kernelClient = createKernelAccountClient({
+    userOperation: { 
+      estimateFeesPerGas: async ({bundlerClient}) => { 
+        return getUserOperationGasPrice(bundlerClient) 
+      } 
+    }, 
+    // ...
+  });
+kernelClient.sendUserOperation and kernelClient.signUserOperation now take userOperation properties directly
+
+await kernelClient.sendUserOperation({
+  userOperation: { sender, callData, nonce, ...rest }, 
+  sender, 
+  callData, 
+  nonce, 
+  ...rest 
+});
+await kernelClient.signUserOperation({
+  userOperation: { sender, callData, nonce, ...rest }, 
+  sender, 
+  callData, 
+  nonce, 
+  ...rest 
+});
+Replaced account.encodeCallData with account.encodeCalls
+
+    await account.encodeCallData( 
+      {  
+        to: zeroAddress,  
+        value: BigInt(0), 
+        data: "0x", 
+        callType 
+      }, 
+    ), 
+    await account.encodeCalls([ 
+      { 
+        to: zeroAddress, 
+        value: BigInt(0), 
+        data: "0x", 
+      }, 
+    ], callType), 
+Replaced kernelClient.sendTransactions with kernelClient.sendTransaction
+
+await kernelClient.sendTransactions({ 
+    transactions: [ 
+      // ... 
+    ], 
+}); 
+await kernelClient.sendTransaction({ 
+    calls: [ 
+      // ... 
+    ], 
+}); 
+KernelAccountClient extends bundlerActions by default
+For example:
+
+
+const bundlerClient = kernelClient.extend(bundlerActions(entryPoint)); 
+await bundlerClient.waitForUserOperationReceipt({ 
+  hash: userOpHash, 
+}); 
+await kernelClient.waitForUserOperationReceipt({ hash }) 
+Merged bundlerClient.sendUserOperation and kernelClient.sendUserOperation
+kernelClient.sendUserOperation now prepares the userOperation if needed and directly calls eth_sendUserOperation.
+
+SDK 5.1.x => 5.2.x
+Most functions now take an entryPoint param
+EntryPoint 0.7 is the most recent update to ERC-4337, but we will still be supporting EntryPoint 0.6.
+
+The SDK will automatically use Kernel v3 for EntryPoint 0.7, and Kernel v2 for EntryPoint 0.6.
+
+You will need to specify an entryPoint parameter to many functions, including:
+
+Functions for creating validators, such as signerToEcdsaValidator
+Functions for creating Kernel accounts, such as createKernelAccount
+Function for creating Kernel client: createKernelAccountClient
+For example:
+
+
+import { ENTRYPOINT_ADDRESS_V06, ENTRYPOINT_ADDRESS_V07 } from "permissionless"
+ 
+// If migrating a live app
+const entryPoint = ENTRYPOINT_ADDRESS_V06
+ 
+// If launching a new app
+const entryPoint = ENTRYPOINT_ADDRESS_V07
+ 
+const account = await createKernelAccount(publicClient, {
+  plugins: {
+    sudo: ecdsaValidator,
+  },
+  entryPoint,
+})
+If you are migrating a live app that is using EntryPoint 0.6 (Kernel v2), set entryPoint to ENTRYPOINT_ADDRESS_V06.
+If you are launching a new app, set entryPoint to ENTRYPOINT_ADDRESS_V07.
+Replaced transport with bundlerTransport inside createKernelAccountClient
+
+const kernelClient = createKernelAccountClient({
+  transport: http(bundlerUrl), 
+  bundlerTransport: http(bundlerUrl), 
+  // ...
+})
+Replaced sponsorUserOperation with middleware.sponsorUserOperation
+Instead of accepting just a sponsorUserOperation middleware, createSmartAccountClient now accepts a middleware function that can specify a sponsorUserOperation function internally, as well as a gasPrice function.
+
+
+const kernelClient = createKernelAccountClient({
+  sponsorUserOperation: paymasterClient.sponsorUserOperation, 
+  middleware: { 
+		sponsorUserOperation: paymasterClient.sponsorUserOperation, 
+	}, 
+  // ...
+})
+
+ponsoring Gas
+With account abstraction, you can pay gas for users so they don't have to acquire native tokens in order to interact with your DApp.
+
+When you sponsor gas through ZeroDev, there are two ways to pay for the gas:
+
+Put down your credit card. We front the gas for your users, and then at the end of the billing cycle (once a month) we charge your credit card.
+
+Buy gas credits from us.
+
+Setting up gas sponsoring policies
+To avoid over-spending gas on sponsoring, you must set up gas-sponsoring policies. Sign up on the ZeroDev dashboard if you haven't already, then set up gas policies.
+
+Note that you MUST set up a gas policy to begin sponsoring. Without setting up a gas policy, there won't be any gas sponsored.
+
+API
+Impatient? Check out complete examples here.
+
+When setting up an account, you can specify a getPaymasterData function in paymaster when you create the account client.
+
+The getPaymasterData function essentially takes a UserOp and then returns a UserOp with the paymasterAndData field set. For example, if you are using the ZeroDev paymaster, use the createZeroDevPaymasterClient helper function:
+
+
+import { http } from "viem"
+import { createZeroDevPaymasterClient, createKernelAccountClient } from "@zerodev/sdk"
+import { getEntryPoint } from "@zerodev/sdk/constants"
+ 
+const entryPoint = getEntryPoint("0.7")
+ 
+const paymasterClient = createZeroDevPaymasterClient({
+  chain,
+  // Get this RPC from ZeroDev dashboard
+  transport: http(PAYMASTER_RPC),
+})
+ 
+const kernelClient = createKernelAccountClient({
+  paymaster: {
+    getPaymasterData: (userOperation) => {
+      return paymasterClient.sponsorUserOperation({
+        userOperation,
+      })
+    }
+  }
+ 
+  // other args...
+})
+What happens when you reach the sponsorship limit?
+If you have reached the sponsorship limit, either because of the policies you set up or because you have reached an account-level limit, sending UserOp will fail.
+
+If, instead of failing, you want the UserOp to proceed but use the user's own native tokens (e.g. ETH), then you can set up your paymaster middleware like this:
+
+
+import { GetPaymasterDataReturnType } from "viem/account-abstraction"
+ 
+const kernelClient = createKernelAccountClient({
+  // other args...
+ 
+  paymaster: {
+    getPaymasterData: async (userOperation) => {
+      try {
+        return await paymasterClient.sponsorUserOperation({ userOperation })
+      } catch (error) {
+        return {} as GetPaymasterDataReturnType
+      }
+    },
+  },
+})
+UltraRelay
+UltraRelay is being gradually rolled out to all networks. It currently supports: Base.
+
+UltraRelay is a new relay solution that functions as a combination of ERC-4337 bundlers and paymasters, as a single entity. UltraRelay is significantly more efficient than regular ERC-4337 bundlers and paymasters. In our benchmarks, UltraRelay achieves:
+
+30% less gas than ERC-4337 bundlers
+20% lower latency than ERC-4337 bundlers
+This makes UltraRelay the best solution for gas sponsorship.
+
+API
+To use UltraRelay, simply update your createKernelAccountClient config as follows:
+
+Append ?provider=ULTRA_RELAY to your bundler RPC.
+(optional) Do NOT set the paymaster middleware, which will save you some latency.
+(optional) Set a no-op gas estimation middleware, which will save you even more latency.
+Here's how it looks like in code:
+
+
+const kernelClient = createKernelAccountClient({
+  account,
+  chain,
+  bundlerTransport: http(BUNDLER_RPC+`?provider=ULTRA_RELAY`),
+  userOperation: {
+    estimateFeesPerGas: async ({ bundlerClient }) => {
+      return {
+        maxFeePerGas: BigInt(0),
+        maxPriorityFeePerGas: BigInt(0),
+      }
+    },
+  },
+})

@@ -13,6 +13,8 @@ import "hardhat-deploy-ethers";
 import "@nomicfoundation/hardhat-verify"; // This plugin is still loaded but we'll only use Sourcify for verification.
 import generateTsAbis from "./scripts/generateTsAbis";
 
+// We'll use the built-in hardhat verification
+
 // Provider API key for forking (if needed)
 const providerApiKey = process.env.ALCHEMY_API_KEY || "oKxs-03sij-U_N0iOlrSsZFr29-IqbuF";
 
@@ -35,10 +37,10 @@ const config: HardhatUserConfig = {
             enabled: true,
             runs: 200,
           },
-          // Optional: To store source code in JSON instead of IPFS (if needed)
+          // Store source code in JSON instead of IPFS to avoid verification timeout
           metadata: {
-            bytecodeHash: "none",
-            useLiteralContent: true,
+            bytecodeHash: "none", // disable ipfs
+            useLiteralContent: true, // store source code in the json file directly
           },
         },
       },
@@ -57,7 +59,7 @@ const config: HardhatUserConfig = {
         enabled: process.env.MAINNET_FORKING_ENABLED === "true",
       },
     },
-    monadTestnet: {
+    monad: {
       url: "https://testnet-rpc.monad.xyz",
       chainId: 10143,
       accounts: [deployerPrivateKey],
@@ -147,16 +149,10 @@ const config: HardhatUserConfig = {
   sourcify: {
     enabled: true,
     apiUrl: "https://sourcify-api-monad.blockvision.org",
-    browserUrl: "https://testnet.monadexplorer.com",
+    browserUrl: "https://testnet.monadexplorer.com"
   },
-  // You can leave the etherscan configuration empty or remove it if you only want Sourcify.
   etherscan: {
-    apiKey: "",
-  },
-  verify: {
-    etherscan: {
-      apiKey: "",
-    },
+    enabled: false
   },
 };
 

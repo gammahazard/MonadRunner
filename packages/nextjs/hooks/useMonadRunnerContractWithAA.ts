@@ -4,7 +4,7 @@ import { notification } from "~~/utils/scaffold-eth";
 import { useAA } from "~~/providers/AAProvider";
 import deployedContracts from "~~/contracts/deployedContracts";
 import { encodeFunctionData } from "viem";
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { AA_STATUS_EVENT } from "./useAAWallet";
 
 // Re-export the original types
@@ -37,8 +37,18 @@ export const useMonadRunnerContractWithAA = () => {
     contractAbi
   } = useAA();
   
-  // Use the AA address if available, otherwise use the connected EOA address
-  const effectiveAddress = isAAEnabled && aaAddress ? aaAddress : connectedAddress;
+  // Get the locally stored smart account if available
+  const storedSmartAccount = typeof window !== 'undefined' ? localStorage.getItem("monad-runner-aa-address") : null;
+  
+  // Use the most reliable address in this priority order:
+  // 1. AA address from context if enabled
+  // 2. Stored smart account from localStorage if different from EOA
+  // 3. Connected EOA address as fallback
+  const effectiveAddress = isAAEnabled && aaAddress ? 
+    aaAddress : 
+    (storedSmartAccount && storedSmartAccount.toLowerCase() !== connectedAddress?.toLowerCase()) ? 
+      storedSmartAccount : 
+      connectedAddress;
 
   // Read the public mapping "players" to check registration
   const { data: rawPlayer, refetch: refetchPlayer } = useScaffoldReadContract({
@@ -282,20 +292,50 @@ export const useMonadRunnerContractWithAA = () => {
     
     setIsRefreshing(true);
     try {
+      console.log("Refreshing Monad Runner contract data after AA status change");
       await refreshAllData();
+      
+      // Check for the stored smart account address
+      const storedAAAddress = localStorage.getItem("monad-runner-aa-address");
+      const isEnabled = localStorage.getItem("monad-runner-aa-enabled") === "true";
+      
+      // Instead of forcing a page reload on mismatch, just log it
+      // This prevents endless refresh loops when RPC is rate limited
+      if (isEnabled && storedAAAddress && 
+          effectiveAddress?.toLowerCase() === connectedAddress?.toLowerCase() &&
+          storedAAAddress.toLowerCase() !== connectedAddress?.toLowerCase()) {
+        console.log("AA address mismatch detected - updating state without reload");
+        // Don't force a reload
+      }
     } finally {
       setIsRefreshing(false);
     }
-  }, [refreshAllData, isRefreshing]);
+  }, [refreshAllData, isRefreshing, effectiveAddress, connectedAddress]);
 
   // Listen for our standardized AA status change event
+  // Track the last refresh timestamp to avoid excessive refreshes
+  const lastRefreshTimestampRef = useRef<number>(0);
+  
   useEffect(() => {
     const handleAAStatusChange = (event: Event) => {
       console.log("AA Status Changed in Contract Hook:", (event as CustomEvent).detail);
+      
+      // Add rate limiting to avoid refresh loops
+      const now = Date.now();
+      const timeSinceLastRefresh = now - lastRefreshTimestampRef.current;
+      
+      // Only refresh at most once every 5 seconds
+      if (timeSinceLastRefresh < 5000) {
+        console.log(`Skipping refresh, last refresh was ${timeSinceLastRefresh}ms ago`);
+        return;
+      }
+      
+      lastRefreshTimestampRef.current = now;
+      
       // Trigger a refresh of data with debouncing and delay to avoid updating state during render
       setTimeout(() => {
         debouncedRefresh();
-      }, 0);
+      }, 300);
     };
   
     // Add event listener using the constant from useAAWallet

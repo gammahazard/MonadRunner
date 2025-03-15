@@ -20,8 +20,32 @@ export function useLocalStorage<T>(
     try {
       // Get from local storage by key
       const item = window.localStorage.getItem(key);
-      // Parse stored json or if none return initialValue
-      return item ? JSON.parse(item) : initialValue;
+      
+      // If no item exists, return initialValue
+      if (!item) return initialValue;
+      
+      // Try to parse the item as JSON, but handle non-JSON values gracefully
+      try {
+        // Check if the string starts with expected JSON characters
+        const trimmedItem = item.trim();
+        if (
+          (trimmedItem.startsWith('{') && trimmedItem.endsWith('}')) || 
+          (trimmedItem.startsWith('[') && trimmedItem.endsWith(']')) ||
+          trimmedItem === 'null' ||
+          trimmedItem === 'true' ||
+          trimmedItem === 'false' ||
+          /^-?\d+(\.\d+)?$/.test(trimmedItem) // number
+        ) {
+          return JSON.parse(trimmedItem);
+        } else {
+          // For non-JSON values, use the raw string
+          console.log(`Using non-JSON value directly for key "${key}": ${item}`);
+          return item as unknown as T;
+        }
+      } catch (parseError) {
+        console.warn(`Failed to parse localStorage item for key "${key}", using as raw string:`, parseError);
+        return item as unknown as T;
+      }
     } catch (error) {
       console.error(`Error reading localStorage key "${key}":`, error);
       return initialValue;
@@ -41,7 +65,24 @@ export function useLocalStorage<T>(
       
       // Save to local storage
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(key, JSON.stringify(valueToStore));
+        try {
+          // Try to stringify as JSON, but handle special types
+          if (
+            typeof valueToStore === 'object' || 
+            typeof valueToStore === 'boolean' ||
+            typeof valueToStore === 'number' ||
+            valueToStore === null
+          ) {
+            window.localStorage.setItem(key, JSON.stringify(valueToStore));
+          } else {
+            // For strings and other non-JSON values, store directly
+            window.localStorage.setItem(key, String(valueToStore));
+          }
+        } catch (stringifyError) {
+          // If JSON.stringify fails, convert to string
+          console.warn(`Couldn't stringify value for key "${key}", storing as string:`, stringifyError);
+          window.localStorage.setItem(key, String(valueToStore));
+        }
         
         // Dispatch a custom event when this value changes
         if (dispatchEvent) {
@@ -68,10 +109,32 @@ export function useLocalStorage<T>(
         try {
           // Use setTimeout to avoid updating state during render
           setTimeout(() => {
-            setStoredValue(JSON.parse(e.newValue as string));
+            // Try to parse as JSON, but handle non-JSON values gracefully
+            try {
+              // Check if the string starts with expected JSON characters
+              const trimmedValue = (e.newValue as string).trim();
+              if (
+                (trimmedValue.startsWith('{') && trimmedValue.endsWith('}')) || 
+                (trimmedValue.startsWith('[') && trimmedValue.endsWith(']')) ||
+                trimmedValue === 'null' ||
+                trimmedValue === 'true' ||
+                trimmedValue === 'false' ||
+                /^-?\d+(\.\d+)?$/.test(trimmedValue) // number
+              ) {
+                setStoredValue(JSON.parse(trimmedValue));
+              } else {
+                // For non-JSON values, use the raw string
+                console.log(`Using non-JSON value directly for key "${key}": ${e.newValue}`);
+                setStoredValue(e.newValue as unknown as T);
+              }
+            } catch (parseError) {
+              // If parsing fails, use the raw string
+              console.log(`Parsing failed, using raw value for key "${key}": ${e.newValue}`);
+              setStoredValue(e.newValue as unknown as T);
+            }
           }, 0);
         } catch (error) {
-          console.error(`Error parsing localStorage change for key "${key}":`, error);
+          console.error(`Error handling localStorage change for key "${key}":`, error);
         }
       }
     };

@@ -39,8 +39,6 @@ contract MonadRunnerGame {
     uint256 private constant MAX_USERNAME_LENGTH = 20;
     uint256 private constant MAX_PLAYER_SCORE_HISTORY = 10;
     
-    // Cheaper to use uint8 for small numbers (uses less storage)
-    uint8 private constant USERNAME_PREFIX_LENGTH = 7; // "Player_"
 
     // =============== STATE VARIABLES ===============
     // Immutable variables cost less gas than regular state variables
@@ -147,29 +145,8 @@ contract MonadRunnerGame {
     function registerSmartAccountFor(address playerAddress, address smartAccount) external onlyAuthorizedRelayer {
         if (smartAccount == address(0)) revert InvalidSmartAccount();
         
-        // Gas optimization: Store the existence check result
-        bool playerExists = players[playerAddress].exists;
-        
-        // For EIP-7702, if the player doesn't exist yet but the smart account
-        // is the same as the player address, register the player automatically
-        if (!playerExists && playerAddress == smartAccount) {
-            // Generate username only when needed (gas optimization)
-            string memory username = _generateDefaultUsername(playerAddress);
-            
-            players[playerAddress] = Player({
-                username: username,
-                highScore: 0,
-                timesPlayed: 0,
-                lastPlayed: 0,
-                exists: true
-            });
-            
-            playerAddresses.push(playerAddress);
-            emit PlayerRegistered(playerAddress, username);
-        } else {
-            // Otherwise, require that the player already exists
-            if (!playerExists) revert PlayerDoesNotExist();
-        }
+        // Require that the player already exists
+        if (!players[playerAddress].exists) revert PlayerDoesNotExist();
         
         smartAccounts[playerAddress] = smartAccount;
         emit SmartAccountRegistered(playerAddress, smartAccount);
@@ -335,43 +312,4 @@ contract MonadRunnerGame {
         return left;
     }
 
-    // Optimized username generation for lower gas
-    function _generateDefaultUsername(address playerAddress) internal pure returns (string memory) {
-        // Fixed prefix "Player_" + last 8 hex chars of address
-        bytes memory result = new bytes(15); // 7 for "Player_" + 8 for hex
-        
-        // Copy "Player_" prefix
-        result[0] = "P";
-        result[1] = "l";
-        result[2] = "a";
-        result[3] = "y";
-        result[4] = "e";
-        result[5] = "r";
-        result[6] = "_";
-        
-        // Extract last 4 bytes of address (8 hex chars)
-        bytes20 addrBytes = bytes20(playerAddress);
-        
-        // Optimize for gas by using bitwise operations and direct assignment
-        unchecked {
-            for (uint256 i = 0; i < 4; i++) {
-                uint8 b = uint8(addrBytes[16 + i]); // last 4 bytes
-                result[7 + i*2] = _getHexChar(b >> 4); // high nibble
-                result[8 + i*2] = _getHexChar(b & 0x0f); // low nibble
-            }
-        }
-        
-        return string(result);
-    }
-    
-    // Gas-optimized hex conversion
-    function _getHexChar(uint8 value) internal pure returns (bytes1) {
-        // Using inline assembly for the most gas-efficient conversion
-        bytes1 c;
-        assembly {
-            // Add '0' (48) for 0-9, or 'a'-10 (97-10=87) for a-f
-            c := add(add(value, mul(lt(value, 10), 48)), mul(iszero(lt(value, 10)), 87))
-        }
-        return c;
-    }
 }

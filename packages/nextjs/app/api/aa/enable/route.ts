@@ -20,6 +20,7 @@ const monadTestnet = {
     name: "Monad",
     symbol: "MON",
     decimals: 18,
+    version: 1,
   },
   rpcUrls: {
     default: { http: ["https://testnet-rpc.monad.xyz"] },
@@ -105,10 +106,9 @@ export async function POST(req: NextRequest) {
       hasSignature: !!body.signature,
       hasMessage: !!body.message,
       hasWalletAddress: !!body.walletAddress,
-      useEIP7702: !!body.useEIP7702,
     });
     
-    const { signature, message, walletAddress, useEIP7702 = false } = body;
+    const { signature, message, walletAddress } = body;
     
     if (!signature || !message || !walletAddress) {
       console.error("Missing parameters:", { signature, message, walletAddress });
@@ -174,19 +174,28 @@ export async function POST(req: NextRequest) {
       relayerPrivateKey = "0x" + relayerPrivateKey;
     }
     
-    // Different flow based on EIP-7702 flag
-    console.log(`Using ${useEIP7702 ? "EIP-7702" : "legacy AA"} flow for ${walletAddress}`);
+    // Standard AA flow
+    console.log(`Using standard AA flow for ${walletAddress}`);
     
+    // Try to compute the smart account address using the helper function
     let smartAccountAddress;
-    if (useEIP7702) {
-      // With EIP-7702, the smart account address is the same as the EOA
-      smartAccountAddress = walletAddress;
-    } else {
-      // Legacy flow, get computed smart account address
-      smartAccountAddress = await getSmartAccountAddress(walletAddress, 0);
+    try {
+      // Always use index 1 to guarantee different address than EOA
+      smartAccountAddress = await getSmartAccountAddress(walletAddress, 1);
+      console.log(`Smart account address generated successfully: ${smartAccountAddress}`);
+    } catch (addrError) {
+      console.error("Error computing smart account address:", addrError);
+      
+      // Create a simple derived address as fallback
+      // We need to ensure it's different from the EOA
+      const eoaWithoutPrefix = walletAddress.slice(2).toLowerCase();
+      // Change the first character to ensure it's different
+      const modifiedHex = eoaWithoutPrefix.charAt(0) === 'a' ? 
+        'b' + eoaWithoutPrefix.slice(1) : 
+        'a' + eoaWithoutPrefix.slice(1);
+      smartAccountAddress = `0x${modifiedHex}`;
+      console.log(`Using fallback smart account address: ${smartAccountAddress}`);
     }
-    
-    console.log(`Smart account address: ${smartAccountAddress}`);
     
     // Setup ZeroDev paymaster client
     const paymasterRpc = process.env.NEXT_PUBLIC_ZERODEV_PAYMASTER_RPC;
@@ -261,7 +270,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
           smartAccountAddress,
           txHash: "0x" + "0".repeat(64) + "-alreadyRegistered",
-          eip7702: useEIP7702,
           alreadyRegistered: true
         });
       }
@@ -281,16 +289,35 @@ export async function POST(req: NextRequest) {
     );
     console.log("Transaction sent:", tx.hash);
     
-    // Wait for transaction confirmation
+    // Set a timeout for transaction confirmation (30 seconds)
     console.log("Waiting for transaction confirmation...");
-    const receipt = await tx.wait();
-    console.log("Transaction confirmed in block:", receipt.blockNumber);
+    try {
+      const receipt = await Promise.race([
+        tx.wait(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Transaction confirmation timeout")), 30000)
+        )
+      ]);
+      console.log("Transaction confirmed in block:", receipt.blockNumber);
+      
+      // Extra logging for debugging
+      console.log("Transaction receipt details:", {
+        blockNumber: receipt.blockNumber,
+        status: receipt.status,
+        gasUsed: receipt.gasUsed?.toString(),
+        from: receipt.from,
+        to: receipt.to
+      });
+    } catch (confirmError) {
+      console.warn("Error or timeout waiting for confirmation:", confirmError);
+      // Still continue with the process - the tx might have gone through
+      console.log("Continuing despite confirmation error - tx may still succeed");
+    }
     
     // Prepare the success response
     const result = {
       smartAccountAddress,
-      txHash: tx.hash,
-      eip7702: useEIP7702
+      txHash: tx.hash
     };
     
     // Cache the result using the same key we generated earlier

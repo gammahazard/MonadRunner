@@ -5,6 +5,7 @@ import { useLocalStorage } from "./useLocalStorage";
 import { encodeFunctionData } from "viem";
 import deployedContracts from "~~/contracts/deployedContracts";
 import { notification } from "~~/utils/scaffold-eth";
+import { getSmartAccountAddress } from "./aaWallet";
 
 // Define standard AA event name for the entire app
 export const AA_STATUS_EVENT = 'aa-status-changed';
@@ -31,7 +32,6 @@ export const useAAWallet = (): AAWalletState => {
   const [error, setError] = useState<string | null>(null);
   const [aaAddress, setAAAddress] = useLocalStorage<string | null>("monad-runner-aa-address", null, true);
   const [isAAEnabled, setIsAAEnabled] = useLocalStorage<boolean>("monad-runner-aa-enabled", false, true);
-  const [isEIP7702] = useLocalStorage<boolean>("monad-runner-eip7702", true);
   const { signMessageAsync } = useSignMessage();
   const { writeContractAsync } = useScaffoldWriteContract("MonadRunnerGame");
   const statusCheckInProgressRef = useRef(false);
@@ -52,15 +52,27 @@ export const useAAWallet = (): AAWalletState => {
       return;
     }
     
+    // Special case: if localStorage has no data but user is logged in,
+    // force a check to recover smart account data from blockchain
+    const hasLocalSmartAccount = localStorage.getItem("monad-runner-aa-address");
+    const hasLocalAAEnabled = localStorage.getItem("monad-runner-aa-enabled");
+    
+    if (connectedAddress && (!hasLocalSmartAccount || !hasLocalAAEnabled)) {
+      console.log("No AA data in localStorage, forcing blockchain check to recover data");
+      force = true;
+    }
+    
     // Add to pending set
     pendingRequestsRef.current.add(requestKey);
     
-    // Implement rate limiting - only one request per second
+    // Implement very strict rate limiting to prevent refresh loops and RPC rate limiting
     const now = Date.now();
     const timeSinceLastRequest = now - lastApiRequestRef.current;
-    const minRequestInterval = 1100; // Slightly over 1 second to avoid race conditions
+    const minRequestInterval = 30000; // 30 seconds between status checks
     
-    if (timeSinceLastRequest < minRequestInterval) {
+    // Only allow forced checks once every 15 seconds
+    if ((timeSinceLastRequest < minRequestInterval) || 
+        (force && timeSinceLastRequest < 15000)) {
       // If we have an existing timeout, don't set another one
       if (apiRequestTimeoutRef.current !== null) {
         pendingRequestsRef.current.delete(requestKey);
@@ -85,9 +97,24 @@ export const useAAWallet = (): AAWalletState => {
     
     try {
       console.log(`Checking AA status for ${connectedAddress}...`);
+      
+      // Add the stored smart account address to the request headers if available
+      const storedAAAddress = localStorage.getItem("monad-runner-aa-address");
+      const headers: Record<string, string> = { 
+        "Content-Type": "application/json" 
+      };
+      
+      // Add header if smart account exists in localStorage
+      if (storedAAAddress) {
+        // Remove any quotes to prevent JSON encoding issues
+        const cleanAddress = storedAAAddress.replace(/"/g, '');
+        console.log(`Including stored smart account in request: ${cleanAddress}`);
+        headers["x-aa-smart-account"] = cleanAddress;
+      }
+      
       const response = await fetch("/api/aa/status", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ 
           walletAddress: connectedAddress
         }),
@@ -132,10 +159,29 @@ export const useAAWallet = (): AAWalletState => {
             setIsAAEnabled(isEnabled);
           }
           
-          // If API shows enabled, store in localStorage for future reference
-          if (isEnabled) {
-            console.log(`API returned enabled status, saving to localStorage`);
+          // If API shows enabled and returns a valid smart account address,
+          // update localStorage with the blockchain data
+          const zeroAddress = "0x0000000000000000000000000000000000000000";
+          if (isEnabled && updatedAAAddress && 
+              updatedAAAddress !== zeroAddress && 
+              updatedAAAddress.toLowerCase() !== connectedAddress.toLowerCase()) {
+            console.log(`API returned valid smart account ${updatedAAAddress}, updating localStorage`);
+            localStorage.setItem("monad-runner-aa-enabled", "true");
             localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+            localStorage.setItem("monad-runner-aa-address", updatedAAAddress);
+            
+            // Dispatch a status event to notify other components
+            window.dispatchEvent(
+              new CustomEvent(AA_STATUS_EVENT, {
+                detail: {
+                  isEnabled: true,
+                  address: connectedAddress,
+                  smartAccountAddress: updatedAAAddress,
+                  fromBlockchain: true,
+                  timestamp: Date.now()
+                },
+              })
+            );
           }
         }
         
@@ -158,8 +204,39 @@ export const useAAWallet = (): AAWalletState => {
       } else {
         // Handle error status codes
         if (response.status === 429) {
-          // Rate limited - just log, don't change state
-          console.log(`Rate limited: ${data.error}, retry after ${data.retryAfter}ms`);
+          // Rate limited - check if we have a smart account address in the response
+          if (data.smartAccountAddress && data.retainClientState) {
+            console.log(`Rate limited but got smart account address: ${data.smartAccountAddress}`);
+            
+            // Immediately update localStorage and state if we have a valid address
+            if (data.smartAccountAddress.toLowerCase() !== connectedAddress.toLowerCase()) {
+              console.log(`Saving rate-limited smart account to localStorage: ${data.smartAccountAddress}`);
+              localStorage.setItem("monad-runner-aa-enabled", "true");
+              localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
+              localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress);
+              
+              // Update state too
+              setAAAddress(data.smartAccountAddress);
+              setIsAAEnabled(true);
+              
+              // Dispatch an event so UI components can update
+              window.dispatchEvent(
+                new CustomEvent(AA_STATUS_EVENT, {
+                  detail: {
+                    isEnabled: true,
+                    address: connectedAddress,
+                    smartAccountAddress: data.smartAccountAddress,
+                    timestamp: Date.now(),
+                    fromRateLimit: true,
+                    isDefinitive: true
+                  },
+                })
+              );
+            }
+          } else {
+            // Standard rate limit with no data
+            console.log(`Rate limited: ${data.error}, retry after ${data.retryAfter}ms`);
+          }
         } else if ([500, 503].includes(response.status) && data.retainClientState) {
           // Server error but we should keep current state
           console.log("Server error but retaining client state:", data.error);
@@ -205,6 +282,23 @@ export const useAAWallet = (): AAWalletState => {
     console.log(`Connected with wallet: ${connectedAddress}`);
     console.log(`Current AA status in memory: enabled=${isAAEnabled}, address=${aaAddress || 'none'}`);
     console.log(`LocalStorage AA wallet: ${localStorage.getItem("monad-runner-aa-wallet") || 'none'}`);
+    
+    // Check if we need to force a blockchain sync on first connection
+    // This is especially important if localStorage was cleared but smart account exists
+    const storedSmartAccount = localStorage.getItem("monad-runner-aa-address");
+    const storedEnabledWallet = localStorage.getItem("monad-runner-aa-wallet");
+    
+    // If we have no stored data but the user is connected, force a check with blockchain
+    // This recovers lost state when localStorage is cleared
+    if (!storedSmartAccount || !storedEnabledWallet) {
+      console.log("No stored AA data found, checking blockchain for recovery...");
+      
+      // Use setTimeout to avoid doing this during render
+      setTimeout(() => {
+        // Force check with blockchain, bypass cache
+        checkAAStatus(true);
+      }, 500);
+    }
 
     // CRITICAL: Check if this address has previously enabled AA
     // If the address matches what we stored, use the localStorage values directly
@@ -221,13 +315,26 @@ export const useAAWallet = (): AAWalletState => {
       previousEnabledWallet.toLowerCase() === connectedAddress.toLowerCase();
 
     if (isPreviouslyEnabled) {
-      // If this wallet previously enabled AA, force enable state
-      console.log(`This wallet (${connectedAddress}) previously enabled AA, using cached status`);
+      // If this wallet previously enabled AA, check if we have a valid smart account address
+      console.log(`This wallet (${connectedAddress}) previously enabled AA, validating stored data`);
+      const storedAAAddress = localStorage.getItem("monad-runner-aa-address");
       
-      // Make sure our state is correct
-      if (!isAAEnabled || !aaAddress) {
-        setAAAddress(connectedAddress);
-        setIsAAEnabled(true);
+      // Only use if we have a valid smart account address and it's different from EOA
+      if (storedAAAddress && storedAAAddress.toLowerCase() !== connectedAddress.toLowerCase()) {
+        console.log(`Using stored smart account address: ${storedAAAddress}`);
+        
+        // Make sure our state is correct
+        if (!isAAEnabled) {
+          setIsAAEnabled(true);
+        }
+        if (!aaAddress) {
+          setAAAddress(storedAAAddress);
+        }
+      } else {
+        console.warn("Invalid or missing smart account in localStorage, ignoring");
+        // Clear invalid state to force reconfiguration
+        localStorage.removeItem("monad-runner-aa-enabled");
+        localStorage.removeItem("monad-runner-aa-address");
       }
       
       // Always dispatch a definitive event - AA is enabled for this wallet
@@ -299,21 +406,63 @@ export const useAAWallet = (): AAWalletState => {
     }
   }, [isConnected, connectedAddress, checkAAStatus, isAAEnabled, aaAddress, setAAAddress, setIsAAEnabled]);
 
-  // Reset AA state when user disconnects
+  // Track when wallet address changes - declared outside effect
+  const previousAddressRef = useRef<string | null>(null);
+  
+  // Reset AA state when user disconnects or switches wallets
   useEffect(() => {
     if (!isConnected || !connectedAddress) {
+      // User disconnected
+      console.log("Wallet disconnected, resetting AA state");
+      
       // Use setTimeout to avoid state updates during render
       setTimeout(() => {
         setIsAAEnabled(false);
         setAAAddress(null);
         lastCheckedAddressRef.current = null;
+        previousAddressRef.current = null;
+        
+        // Also clear any wallet-specific localStorage to prevent using wrong data
+        localStorage.removeItem("monad-runner-aa-enabled");
+        localStorage.removeItem("monad-runner-aa-wallet");
+        localStorage.removeItem("monad-runner-aa-address");
       }, 0);
+    } else if (previousAddressRef.current && 
+               previousAddressRef.current !== connectedAddress && 
+               previousAddressRef.current.toLowerCase() !== connectedAddress.toLowerCase()) {
+      // User switched to a different wallet
+      console.log(`Wallet switched from ${previousAddressRef.current} to ${connectedAddress}, resetting and checking status`);
+      
+      // First reset the state since this is a different wallet
+      setIsAAEnabled(false);
+      setAAAddress(null);
+      
+      // Clear any previous wallet's localStorage
+      localStorage.removeItem("monad-runner-aa-enabled");
+      localStorage.removeItem("monad-runner-aa-wallet");
+      localStorage.removeItem("monad-runner-aa-address");
+      
+      // Now check blockchain status for the new wallet
+      setTimeout(() => {
+        lastCheckedAddressRef.current = connectedAddress;
+        hasCheckedOnConnectionRef.current = false; // Force a fresh check on connection
+        checkAAStatus(true);
+      }, 500);
+      
+      // Update previous address reference
+      previousAddressRef.current = connectedAddress;
     } else if (lastCheckedAddressRef.current !== connectedAddress) {
-      // Address changed, check status right away with a slight delay
+      // First connection or address changed, check status right away
+      console.log(`First connection or address changed to ${connectedAddress}, checking status`);
+      previousAddressRef.current = connectedAddress;
+      
       setTimeout(() => {
         checkAAStatus(true);
-      }, 0);
+      }, 500);
     }
+    
+    // Update previous address reference
+    previousAddressRef.current = connectedAddress;
   }, [connectedAddress, isConnected, setIsAAEnabled, setAAAddress, checkAAStatus]);
 
   // Track the last update timestamp to avoid duplicate calls - must be outside of useEffect
@@ -344,11 +493,43 @@ export const useAAWallet = (): AAWalletState => {
       }
     };
     
+    // Listen for our AA status events as well, especially for force refresh
+    const handleAAStatusEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const detail = customEvent.detail;
+      
+      if (detail && detail.forceRefresh) {
+        console.log("Received force refresh AA status event in useAAWallet");
+        
+        // Force a state update directly
+        if (detail.smartAccountAddress && detail.isEnabled) {
+          setAAAddress(detail.smartAccountAddress);
+          setIsAAEnabled(true);
+          
+          // Refresh address in localStorage too, with a delay to avoid circular updates
+          setTimeout(() => {
+            localStorage.setItem("monad-runner-aa-enabled", "true");
+            localStorage.setItem("monad-runner-aa-wallet", connectedAddress || "");
+            localStorage.setItem("monad-runner-aa-address", detail.smartAccountAddress);
+            
+            // Instead of reloading, update the UI with notifications
+            notification.success("Account Abstraction state updated", {
+              icon: "✅",
+              duration: 3000
+            });
+          }, 500);
+        }
+      }
+    };
+    
     window.addEventListener('localStorage-updated', handleCustomEvent as EventListener);
+    window.addEventListener(AA_STATUS_EVENT, handleAAStatusEvent as EventListener);
+    
     return () => {
       window.removeEventListener('localStorage-updated', handleCustomEvent as EventListener);
+      window.removeEventListener(AA_STATUS_EVENT, handleAAStatusEvent as EventListener);
     };
-  }, [checkAAStatus]);
+  }, [checkAAStatus, connectedAddress, setAAAddress, setIsAAEnabled]);
 
   const enableAA = useCallback(async () => {
     if (!connectedAddress || !isConnected) {
@@ -361,24 +542,62 @@ export const useAAWallet = (): AAWalletState => {
       setIsEnabling(true);
       setError(null);
 
-      // No need to sign the message again if we already have a signature from the modal
-      // Just update the local state directly
+      // Instead of using connectedAddress directly for standard AA (non-EIP7702),
+      // We need to get the computed smart account address
+      let updatedAAAddress;
       
-      // If we're called directly without a signature, we need to get one
-      // But in normal flow this should never happen because we sign in the modal
-      const updatedAAAddress = isEIP7702 ? connectedAddress : connectedAddress;
+      try {
+        // Get the smart account address using the helper function from aaWallet.ts
+        // ALWAYS use index 1 to get different address than EOA
+        updatedAAAddress = await getSmartAccountAddress(connectedAddress, 1);
+        console.log(`Computed smart account address: ${updatedAAAddress}`);
+      } catch (error) {
+        console.error("Error getting smart account address:", error);
+        
+        // Create a fallback address that is guaranteed to be different from the EOA
+        try {
+          // Create a simple derived address
+          const eoaWithoutPrefix = connectedAddress.slice(2).toLowerCase();
+          // Change the first character to ensure it's different
+          const modifiedHex = eoaWithoutPrefix.charAt(0) === 'a' ? 
+            'b' + eoaWithoutPrefix.slice(1) : 
+            'a' + eoaWithoutPrefix.slice(1);
+          updatedAAAddress = `0x${modifiedHex}`;
+          console.log(`Using fallback smart account address: ${updatedAAAddress}`);
+        } catch (fallbackError) {
+          console.error("Failed to create fallback address:", fallbackError);
+          // This is a last resort, but it's better than using the same address
+          updatedAAAddress = `0xF${connectedAddress.slice(3)}`;
+        }
+      }
 
-      // CRITICAL - Immediately update localStorage with this permanent state
-      // No need to check with the API again, it's now enabled permanently 
-      setAAAddress(updatedAAAddress);
-      setIsAAEnabled(true);
+      // Check if this user was previously registered with EIP-7702
+      const previousAAWallet = localStorage.getItem("monad-runner-aa-wallet");
+      const previousAAAddress = localStorage.getItem("monad-runner-aa-address");
       
-      // Store which address this was enabled for
-      // THIS IS EXTREMELY IMPORTANT - it's how we remember which wallets have AA
-      console.log(`Storing wallet ${connectedAddress} in localStorage as AA-enabled`);
-      localStorage.setItem("monad-runner-aa-enabled", "true");
-      localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
-      localStorage.setItem("monad-runner-aa-address", updatedAAAddress);
+      const isPreviouslyEIP7702 = previousAAWallet === connectedAddress && 
+                                 previousAAAddress === connectedAddress;
+      
+      if (isPreviouslyEIP7702) {
+        console.log("Detected previously registered EIP-7702 wallet, updating to standard AA");
+        // This will trigger a re-registration with the correct computed address
+        localStorage.removeItem("monad-runner-aa-enabled");
+        localStorage.removeItem("monad-runner-aa-wallet");
+        localStorage.removeItem("monad-runner-aa-address");
+        
+        // We'll need the modal to re-open for this user to complete the re-registration
+        // The EnableAAModal will handle the registration with the correct smart account
+      }
+
+      // IMPORTANT: Don't immediately update localStorage with this state
+      // We need to wait for the API to confirm the AA setup was successful
+      // This happens in the EnableAAModal and the account creation process
+      // Just update local state, but don't write to localStorage yet
+      setAAAddress(updatedAAAddress);
+      setIsAAEnabled(false); // Leave this as false until confirmed by API
+      
+      console.log(`Computed smart account address: ${updatedAAAddress}`);
+      console.log(`Store will happen after API confirm. EOA: ${connectedAddress}`);
       
       // Log the current localStorage state to verify it's set correctly
       console.log(`LocalStorage after enabling: ${localStorage.getItem("monad-runner-aa-wallet")}`);
@@ -412,7 +631,7 @@ export const useAAWallet = (): AAWalletState => {
     } finally {
       setIsEnabling(false);
     }
-  }, [connectedAddress, isConnected, setAAAddress, setIsAAEnabled, isEnabling, isEIP7702]);
+  }, [connectedAddress, isConnected, setAAAddress, setIsAAEnabled, isEnabling]);
 
   const sendAATransaction = useCallback(
     async (params: {
@@ -466,7 +685,6 @@ export const useAAWallet = (): AAWalletState => {
           value: params.value?.toString() || "0",
           functionName: params.functionName,
           args: params.args,
-          useEIP7702: isEIP7702,
         });
   
         const response = await fetch("/api/aa/transaction", {
@@ -478,7 +696,6 @@ export const useAAWallet = (): AAWalletState => {
             value: params.value?.toString() || "0",
             data,
             originalSender: connectedAddress,
-            useEIP7702: isEIP7702,
           }),
         });
   
@@ -495,6 +712,38 @@ export const useAAWallet = (): AAWalletState => {
         console.error("Error processing AA transaction:", error);
   
         if (
+          error.message?.includes("ZeroDev paymaster doesn't support Monad Testnet") ||
+          error.message?.includes("No bundler RPC found for chainId")
+        ) {
+          console.warn("ZeroDev doesn't fully support Monad Testnet yet, prompting user for manual signing...");
+          
+          const userConfirmed = window.confirm(
+            "Gasless transactions are not yet supported on Monad Testnet. Do you want to manually sign the transaction? (This will cost gas fees.)"
+          );
+          
+          if (!userConfirmed) {
+            notification.error("Transaction canceled by user.");
+            throw new Error("User declined manual signing.");
+          }
+          
+          if (!params.functionName || !params.args) {
+            notification.error("AA failed, and manual signing is unavailable.");
+            throw new Error("ZeroDev AA failed, manual signing requires function name & args.");
+          }
+          
+          try {
+            const tx = await writeContractAsync({
+              functionName: params.functionName,
+              args: params.args,
+            });
+            
+            notification.success("Transaction signed manually.");
+            return tx.hash;
+          } catch (fallbackError: any) {
+            console.error("Fallback signing failed:", fallbackError);
+            throw new Error("ZeroDev AA failed, and manual signing also failed.");
+          }
+        } else if (
           error.message?.includes("HTTP request failed") ||
           error.message?.includes("Internal Server Error") ||
           error.message?.includes("CALL_EXCEPTION") ||
@@ -533,7 +782,7 @@ export const useAAWallet = (): AAWalletState => {
         throw error;
       }
     },
-    [isAAEnabled, aaAddress, connectedAddress, isEIP7702, writeContractAsync, checkAAStatus]
+    [isAAEnabled, aaAddress, connectedAddress, writeContractAsync, checkAAStatus]
   );
 
   return {

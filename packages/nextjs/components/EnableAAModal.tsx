@@ -32,7 +32,6 @@ export type ProcessStage =
 interface EnableAAModalProps {
   onSuccess: (signature: string, message: string) => void;
   onClose: () => void;
-  useEIP7702?: boolean;
   initialStage?: string;
   username?: string;
   onUsernameUpdate: (username: string) => Promise<void>;
@@ -57,7 +56,6 @@ const stageDetails: Record<ProcessStage, { message: string; Icon: React.Componen
 const EnableAAModal: React.FC<EnableAAModalProps> = ({ 
   onSuccess, 
   onClose, 
-  useEIP7702 = true, 
   initialStage = "idle", 
   username = "", 
   onUsernameUpdate 
@@ -88,33 +86,49 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
 
   // Show UsernameModal if no username is provided, but check on-chain data first
   useEffect(() => {
-    // If process is in an error state, don't show the username modal automatically
-    if (processStage === "error") {
+    console.log("Username modal check state:", {
+      processStage,
+      username,
+      hasOnChainUsername,
+      showUsernameModal,
+      pendingUsername: window.pendingUsername,
+      isRegistered
+    });
+    
+    // Don't automatically hide username modal if it's already showing - this is critical!
+    // Only the handler functions should be able to hide it once shown
+    if (showUsernameModal) {
+      console.log("Username modal is already showing, keeping it open");
       return;
     }
     
-    // If we have an on-chain username, use that to avoid requesting it again
-    if (hasOnChainUsername && !username) {
-      console.log("Found on-chain username:", playerData?.username);
-      onUsernameUpdate(playerData?.username || "");
-      setShowUsernameModal(false);
+    // FIRST PRIORITY: If a username was explicitly passed in props, use that
+    // This handles the case where the user already set a username but canceled AA
+    if (username) {
+      console.log("Already have username from props:", username);
+      // The username is already set from props, no need to show the modal
       return;
     }
     
-    // Check for any pending username from previous attempts
-    if (!username && window.pendingUsername) {
+    // SECOND PRIORITY: If player is registered on-chain, use that username
+    if (isRegistered && hasOnChainUsername && playerData?.username) {
+      console.log("Found on-chain username for registered player:", playerData.username);
+      onUsernameUpdate(playerData.username);
+      return;
+    }
+    
+    // THIRD PRIORITY: Check for any pending username from previous attempts
+    if (window.pendingUsername) {
       console.log("Found pending username:", window.pendingUsername);
       onUsernameUpdate(window.pendingUsername);
+      return;
     }
     
-    // If no username from props or on-chain, show the modal
-    if (!username && !hasOnChainUsername) {
-      console.log("No username found, showing modal");
-      setShowUsernameModal(true);
-    } else {
-      setShowUsernameModal(false);
-    }
-  }, [username, hasOnChainUsername, playerData, onUsernameUpdate, processStage]);
+    // LAST RESORT: If no username found anywhere, show the modal
+    // This is the most important case - we must have a username to proceed
+    console.log("No username found anywhere, showing modal");
+    setShowUsernameModal(true);
+  }, [username, hasOnChainUsername, playerData, onUsernameUpdate, processStage, showUsernameModal, isRegistered]);
 
   // Generate the signature message
   const generateMessage = useCallback(() => {
@@ -195,7 +209,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
             walletAddress: connectedAddress,
             signature,
             message: messageRef.current,
-            useEIP7702: useEIP7702 ? "true" : "false"
+            useEIP7702: "false" // Always false with new contract
           });
           
           // Close any existing event source
@@ -244,11 +258,24 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
                 if (data.stage === "success") {
                   processCompletedRef.current = true;
                   
-                  // Store in localStorage
-                  if (connectedAddress) {
+                  // Store in localStorage - ALWAYS use smart account address from API
+                  if (connectedAddress && data.smartAccountAddress) {
                     localStorage.setItem("monad-runner-aa-enabled", "true");
                     localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
-                    localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress || connectedAddress);
+                    localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress);
+                    console.log(`Stored smart account address from SSE: ${data.smartAccountAddress}`);
+                    
+                    // Force page reload right away - this is more reliable than waiting
+                    setTimeout(() => {
+                      console.log("AA Enablement successful! Reloading page to update UI.");
+                      window.location.reload();
+                    }, 1000);
+                  } else {
+                    console.error("Missing smart account address in SSE, AA enablement might have failed");
+                    // Don't enable AA if we're missing the smart account address
+                    if (!data.smartAccountAddress) {
+                      throw new Error("Missing smart account address"); 
+                    }
                   }
                   
                   // Close the event source
@@ -320,7 +347,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
                 signature,
                 message: messageRef.current,
                 walletAddress: connectedAddress,
-                useEIP7702,
+                useEIP7702: false, // Always false with new contract
               }),
             });
             
@@ -338,29 +365,63 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
                   updateStage("success");
                   processCompletedRef.current = true;
                   
-                  // Store in localStorage
-                  if (connectedAddress) {
+                  // Store in localStorage - Always use smart account address from API
+                  if (connectedAddress && data.smartAccountAddress) {
                     localStorage.setItem("monad-runner-aa-enabled", "true");
                     localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
-                    localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress || connectedAddress);
+                    localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress);
+                    console.log(`Stored smart account address from API: ${data.smartAccountAddress}`);
+                    
+                    // Don't reload - just log
+                    console.log("AA Enablement successful via API! Not reloading page");
+                  } else {
+                    console.error("Missing smart account address in API response, AA enablement likely failed");
+                    // Don't set AA enabled if we don't have the smart account address
+                    updateStage("error");
+                    setError("Failed to get smart account address from server. Please try again.");
+                    return null; // Return early to prevent success state
                   }
                   
-                  // Dispatch event
+                  // Dispatch event - ALWAYS use the smart account address from the API
+                  // Never fall back to connectedAddress as the smart account
                   window.dispatchEvent(new CustomEvent('aa-status-changed', {
                     detail: {
                       isEnabled: true,
                       address: connectedAddress,
-                      smartAccountAddress: data.smartAccountAddress || connectedAddress,
+                      smartAccountAddress: data.smartAccountAddress,
                       fromSuccess: true
                     }
                   }));
                   
-                  // Notify parent after a small delay
+                  // Notify parent after a meaningful delay to ensure state propagation
                   setTimeout(() => {
                     if (isMounted) {
-                      onSuccess(signature, messageRef.current);
+                      // Force one more event dispatch with the correct smart account
+                      window.dispatchEvent(new CustomEvent('aa-status-changed', {
+                        detail: {
+                          isEnabled: true,
+                          address: connectedAddress,
+                          smartAccountAddress: data.smartAccountAddress,
+                          fromSuccess: true,
+                          timestamp: Date.now(),
+                          forceRefresh: true
+                        }
+                      }));
+                      
+                      // Always force a page reload for consistency
+                      setTimeout(() => {
+                        console.log("AA Enablement successful event dispatch! Reloading page to update UI.");
+                        window.location.reload();
+                      }, 500);
+                      
+                      // Give UI time to update before calling parent success handler
+                      setTimeout(() => {
+                        if (isMounted) {
+                          onSuccess(signature, messageRef.current);
+                        }
+                      }, 100);
                     }
-                  }, 500);
+                  }, 1000);
                 }
               }
               
@@ -399,11 +460,24 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
                 processCompletedRef.current = true;
                 updateStage("success");
                 
-                // Store in localStorage
-                if (connectedAddress) {
+                // Store in localStorage - require valid smart account
+                if (connectedAddress && data?.smartAccountAddress) {
                   localStorage.setItem("monad-runner-aa-enabled", "true");
                   localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
-                  localStorage.setItem("monad-runner-aa-address", data?.smartAccountAddress || connectedAddress);
+                  localStorage.setItem("monad-runner-aa-address", data.smartAccountAddress);
+                  console.log(`Stored smart account address from fallback API: ${data.smartAccountAddress}`);
+                  
+                  // Force page reload right away for fallback handler too
+                  setTimeout(() => {
+                    console.log("AA Enablement successful via fallback! Reloading page to update UI.");
+                    window.location.reload();
+                  }, 1000);
+                } else {
+                  console.error("Missing smart account address in fallback, AA enablement likely failed");
+                  // Don't set AA enabled if we don't have a valid smart account address
+                  updateStage("error");
+                  setError("Could not obtain smart account address. Please try again.");
+                  return; // Don't proceed with success
                 }
                 
                 // Notify parent
@@ -450,7 +524,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
       }
       connectionActiveRef.current = false;
     };
-  }, [signature, connectedAddress, username, useEIP7702, onSuccess]);
+  }, [signature, connectedAddress, username, onSuccess]);
 
   // Start the signing process
   const handleSign = useCallback(async () => {
@@ -458,6 +532,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
       hasOnChainUsername,
       username,
       playerUsername: playerData?.username,
+      isRegistered,
       isProcessStarted: enablementStartedRef.current,
       processStage
     });
@@ -467,7 +542,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
     processCompletedRef.current = false;
     
     // IMPORTANT: The user must have a username set, either on-chain or from the form
-    const hasUsername = hasOnChainUsername || !!username;
+    const hasUsername = isRegistered || hasOnChainUsername || !!username;
     
     if (!hasUsername) {
       console.log("No username available, showing username modal");
@@ -480,7 +555,8 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
       await onUsernameUpdate(playerData.username);
     }
     
-    // Start signing
+    // Start the multi-stage AA enablement process 
+    // This will show progress stages in the UI
     setProcessStage("signing");
     setError(null);
     
@@ -591,8 +667,50 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
               }
             }
             
+            // Special handling for OnlyRegisteredPlayer error
+            if (error.message?.includes("OnlyRegisteredPlayer")) {
+              console.log("OnlyRegisteredPlayer error detected - player needs to be registered first");
+              
+              // If we're trying to update username, we should try register instead
+              if (args.functionName === "updateUsername") {
+                console.log("Switching from updateUsername to registerPlayer");
+                
+                try {
+                  // Try registerPlayer instead
+                  await registerPlayerFn({
+                    functionName: "registerPlayer",
+                    args: args.args
+                  });
+                  
+                  console.log("registerPlayer succeeded after updateUsername failed");
+                  
+                  // Clear error message on success
+                  setError(null);
+                  
+                  success = true;
+                  return true;
+                } catch (regError) {
+                  console.error("registerPlayer also failed:", regError);
+                  // Continue to standard error handling
+                }
+              }
+            }
+            
             // For other errors, we still can't proceed without username
             console.warn("Contract call error, can't proceed without username:", error.message);
+            
+            // Immediately store pending username for retry
+            if (args && args.args && args.args[0]) {
+              window.pendingUsername = args.args[0];
+            }
+            
+            // If this is a timeout, display a more helpful message
+            if (error.message?.includes("timed out") || error.message?.includes("timeout")) {
+              setError(`Network request timed out. We'll try again.`);
+            } else {
+              setError(`Transaction failed: ${error.message.substring(0, 100)}...`);
+            }
+            
             success = false; // Don't pretend it worked - username is required
             return false;
           }
@@ -606,26 +724,41 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
       // Try to update or register without bubbling up errors
       console.log("Attempting to set username:", newUsername);
       
-      // First try to update, then fall back to register if needed
-      let usernameSuccess = await tryContractCall(updateUsernameFn, {
-        functionName: "updateUsername",
-        args: [newUsername]
-      });
+      let usernameSuccess = false;
       
-      // If update failed, it might be because the player is not registered
-      if (!usernameSuccess) {
-        console.log("Update failed, trying registration instead");
+      // Check if the player is already registered
+      if (isRegistered) {
+        console.log("Player is registered, using updateUsername");
+        usernameSuccess = await tryContractCall(updateUsernameFn, {
+          functionName: "updateUsername",
+          args: [newUsername]
+        });
+      } else {
+        // If not registered, always use registerPlayer first
+        console.log("Player is not registered, using registerPlayer directly");
         usernameSuccess = await tryContractCall(registerPlayerFn, {
           functionName: "registerPlayer",
           args: [newUsername]
         });
+        
+        // If registerPlayer failed, try updateUsername as a fallback
+        if (!usernameSuccess) {
+          console.log("Registration failed, trying updateUsername as fallback");
+          usernameSuccess = await tryContractCall(updateUsernameFn, {
+            functionName: "updateUsername",
+            args: [newUsername]
+          });
+        }
       }
       
       // We can ONLY proceed if the username transaction was successful
       if (usernameSuccess) {
-        console.log("Username transaction successful, proceeding to signing");
+        console.log("Username transaction successful, returning to AA modal");
         
-        // Close the username modal
+        // Force a small delay to ensure state updates properly
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Close the username modal only after success
         setShowUsernameModal(false);
         
         // Reset process state to idle before continuing
@@ -635,67 +768,66 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
         enablementStartedRef.current = false;
         processCompletedRef.current = false;
         
-        // Move to signing stage with a slight delay
-        setTimeout(() => {
-          console.log("Proceeding to signing process");
-          handleSign();
-        }, 500);
+        // We return to the EnableAAModal with the button enabled
+        // The user will need to click "Sign & Enable AA" to proceed
+        console.log("Username successfully set. User can now click 'Sign & Enable AA'");
       } else {
-        // For ANY failure, even after retries, ALWAYS return to username modal
-        console.error("Failed to register username, going back to username modal");
+        // CRITICAL: For ANY failure, ALWAYS stay in username modal
+        console.error("Failed to register username, keeping username modal open for retry");
         
-        // Reset ALL state
+        // Reset AA process state but KEEP username modal open
         setProcessStage("idle");
-        setError(null);
         enablementStartedRef.current = false;
         processCompletedRef.current = false;
         
         // Save username for retry if available
         if (newUsername) {
           window.pendingUsername = newUsername;
+          console.log("Saved pending username for retry:", newUsername);
         }
         
-        // CRITICAL: Always go back to the username modal for ANY username failure
+        // Do NOT close the username modal - keep it open for retry
+        // We explicitly force it to be shown
         setShowUsernameModal(true);
+        
+        // Show error message that will appear on the username modal when we return to it
+        console.log("Forcing username modal to remain open for retry");
       }
       
     } catch (err: any) {
       console.error("Error in username handling:", err);
       
-      // Handle user rejection - show username modal again
-      if (err.message?.includes("User denied") || 
-          err.message?.includes("User rejected")) {
-        console.log("User rejected transaction - returning to username modal");
-        
-        // Clear rate limit flags
-        window.pendingUsername = "";
-        window.isRateLimited = false;
-        window.rateLimitRetryCount = 0;
-        
-        // Show the username modal again
-        setShowUsernameModal(true);
-        setProcessStage("idle");
-        setError(null);
-        return;
-      }
-      
-      // We CANNOT proceed without username - always go back to username modal for ALL errors
-      console.log("Error during username registration, showing username modal:", err.message);
+      // For all errors, we need to preserve the username and show the modal again
       
       // Store the current username for retry if available
       if (newUsername) {
         window.pendingUsername = newUsername;
+        console.log("Saved pending username for retry after error:", newUsername);
       }
       
-      // Reset ALL state
+      // If this is a user rejection, we handle it specially
+      if (err.message?.includes("User denied") || 
+          err.message?.includes("User rejected")) {
+        console.log("User rejected transaction - returning to username modal");
+        
+        // Clear rate limit flags but preserve username
+        window.isRateLimited = false;
+        window.rateLimitRetryCount = 0;
+      } else {
+        // For other errors, display helpful message
+        setError(`Error: ${err.message.substring(0, 100)}${err.message.length > 100 ? '...' : ''}`);
+      }
+      
+      // Reset process state but KEEP username modal open
       setProcessStage("idle");
-      setError(null);
       enablementStartedRef.current = false;
       processCompletedRef.current = false;
       
-      // CRITICAL: Always go back to the username modal when there are errors
-      // with username setting - we CANNOT proceed without a username
+      // CRITICAL: ALWAYS show the username modal for ANY error
+      // We CANNOT proceed without a username
       setShowUsernameModal(true);
+      
+      console.log("Error during username registration, keeping username modal open for retry");
     }
   }, [onUsernameUpdate, updateUsernameFn, registerPlayerFn, onClose, handleSign]);
   
@@ -730,11 +862,16 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
     if (processStage !== "success") {
       processCompletedRef.current = false;
     } else {
-      // Update localStorage
-      if (connectedAddress) {
+      // Only update localStorage if we have a smart account address
+      if (connectedAddress && smartAccountAddress) {
         localStorage.setItem("monad-runner-aa-enabled", "true");
         localStorage.setItem("monad-runner-aa-wallet", connectedAddress);
-        localStorage.setItem("monad-runner-aa-address", connectedAddress);
+        localStorage.setItem("monad-runner-aa-address", smartAccountAddress);
+        console.log(`Stored smart account address in handleClose: ${smartAccountAddress}`);
+      } else {
+        console.error("Missing smart account address in handleClose, not setting AA as enabled");
+        // Explicitly clear any potentially incorrect state
+        localStorage.removeItem("monad-runner-aa-enabled");
       }
     }
     
@@ -756,7 +893,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
 
   return (
     <>
-      {showUsernameModal && !username ? (
+      {showUsernameModal ? (
         <UsernameModal
           walletAddress={connectedAddress || ""}
           onComplete={handleUsernameComplete}
@@ -826,14 +963,17 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
             <div className="mb-4">
               <div className="p-4 bg-base-200 rounded-lg">
                 <p className="text-sm">
-                  By signing, you'll {useEIP7702 ? "upgrade your existing wallet account" : "create a smart account"} that:
+                  By signing, you'll create a smart contract account that:
                 </p>
                 <ul className="list-disc ml-5 mt-2 text-sm">
                   <li>Lets you play without paying gas</li>
-                  <li>Works with your existing wallet</li>
+                  <li>Works alongside your existing wallet</li>
                   <li>Makes transactions faster</li>
-                  {useEIP7702 && <li>Uses EIP-7702 to upgrade your regular wallet</li>}
+                  <li>Has a different address than your wallet</li>
                 </ul>
+                <p className="text-xs text-info mt-2">
+                  Note: This will create a new smart account with a different address than your EOA
+                </p>
               </div>
             </div>
             {processStage === "success" && (
@@ -861,7 +1001,7 @@ const EnableAAModal: React.FC<EnableAAModalProps> = ({
                   "Enabled" : 
                   (!hasOnChainUsername && !username) ? 
                     "Username Required" : 
-                    `Sign & Enable ${useEIP7702 ? "EIP‑7702" : "AA"}`}
+                    "Sign & Enable AA"}
               </button>
             </div>
           </div>

@@ -16,7 +16,8 @@ const MonadRunnerNoSSR = dynamicImport(() => import("~~/components/MonadRunner")
   ssr: false,
   loading: () => (
     <div className="relative w-full aspect-[16/9] bg-base-300/30 rounded-lg flex items-center justify-center">
-      Loading uWu
+      <div className="loading loading-spinner loading-lg text-secondary"></div>
+      <p className="ml-4">Loading Game Engine...</p>
     </div>
   ),
 });
@@ -78,6 +79,15 @@ const Play: NextPage = () => {
   // Set mounted flag once on client
   useEffect(() => {
     setMounted(true);
+    
+    // Initial delay to ensure data is loaded
+    const timer = setTimeout(() => {
+      if (loadingLeaderboard) setLoadingLeaderboard(false);
+      if (loadingUserStats) setLoadingUserStats(false);
+      setIsLoading(false);
+    }, 3000);
+    
+    return () => clearTimeout(timer);
   }, []);
 
   const computedLeaderboard = useMemo(() => {
@@ -147,10 +157,15 @@ const Play: NextPage = () => {
     if (!connectedAddress) return;
     setIsLoading(true);
     
-    if (isRegistered) {
+    // Check if player is registered OR already has a username from AA enablement
+    const hasUsername = isRegistered || playerData?.username || localStorage.getItem("monad-runner-username");
+    
+    if (hasUsername) {
+      console.log("Player has username, starting game directly");
       setGameStarted(true);
       setIsLoading(false);
     } else {
+      console.log("Player needs to set username first");
       setShowUsernameModal(true);
       setIsLoading(false);
     }
@@ -186,6 +201,14 @@ const Play: NextPage = () => {
   const handleUsernameComplete = async (username: string) => {
     setShowUsernameModal(false);
     setIsLoading(true);
+    
+    // Store username in localStorage for persistence
+    try {
+      localStorage.setItem("monad-runner-username", username);
+      console.log("Username saved to localStorage:", username);
+    } catch (e) {
+      console.error("Failed to save username to localStorage:", e);
+    }
     
     if (connectedAddress) {
       try {
@@ -240,8 +263,9 @@ const Play: NextPage = () => {
   };
 
   const LoadingSpinner = () => (
-    <div className="flex justify-center items-center w-full h-full min-h-[200px]">
-      <div className="loading loading-spinner loading-lg text-secondary"></div>
+    <div className="flex flex-col justify-center items-center w-full h-full min-h-[200px]">
+      <div className="loading loading-spinner loading-lg text-secondary mb-4"></div>
+      <p className="text-base-content/70">Loading game data...</p>
     </div>
   );
 

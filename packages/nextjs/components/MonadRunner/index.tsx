@@ -90,63 +90,73 @@ const MonadRunner: React.FC<MonadRunnerProps> = ({
     };
   }, [score]);
 
-  // Set up game engine
+  // Set up game engine with better error handling
   useEffect(() => {
     if (!gameCanvasRef.current) {
       console.error("[MonadRunner] Game canvas ref is null");
       return;
     }
     
-    // Clear any previous canvas elements
-    while (gameCanvasRef.current.firstChild) {
-      gameCanvasRef.current.removeChild(gameCanvasRef.current.firstChild);
-    }
-    
-    // Create new canvas
-    const canvasElement = document.createElement("canvas");
-    canvasElement.width = 800;
-    canvasElement.height = 450;
-    canvasElement.style.width = "100%";
-    canvasElement.style.height = "100%";
-    canvasElement.style.display = "block";
-    gameCanvasRef.current.appendChild(canvasElement);
+    try {
+      // Clear any previous canvas elements
+      while (gameCanvasRef.current.firstChild) {
+        gameCanvasRef.current.removeChild(gameCanvasRef.current.firstChild);
+      }
+      
+      // Create new canvas
+      const canvasElement = document.createElement("canvas");
+      canvasElement.width = 800;
+      canvasElement.height = 450;
+      canvasElement.style.width = "100%";
+      canvasElement.style.height = "100%";
+      canvasElement.style.display = "block";
+      gameCanvasRef.current.appendChild(canvasElement);
 
-    // Create game engine
-    const engine = new ex.Engine({
-      width: 800,
-      height: 450,
-      canvasElement,
-      backgroundColor: ex.Color.fromHex("#1a1a2e"),
-      physics: { gravity: new ex.Vector(0, 800) },
-    });
-    engineRef.current = engine;
+      // Create game engine with simplified config
+      const engine = new ex.Engine({
+        width: 800,
+        height: 450,
+        canvasElement,
+        backgroundColor: ex.Color.fromHex("#1a1a2e"),
+        physics: { gravity: new ex.Vector(0, 800) },
+      });
+      engineRef.current = engine;
 
-    // Set up game scene
-    const gameScene = new GameScene(false); // false = not replay mode
-    gameSceneRef.current = gameScene;
-    engine.add("game", gameScene);
-    engine.goToScene("game");
+      // Set up game scene
+      const gameScene = new GameScene(false); // false = not replay mode
+      gameSceneRef.current = gameScene;
+      engine.add("game", gameScene);
+      engine.goToScene("game");
 
-    // For debugging
-    engine.showDebug(true);
+      // Disable debug for better performance
+      engine.showDebug(false);
 
-    // Start the engine
-    engine.start()
-      .then(() => {
+      // Start the engine with better error handling
+      engine.start().then(() => {
         console.log("[MonadRunner] Engine started successfully!");
-      })
-      .catch((error) => {
+      }).catch((error) => {
         console.error("[MonadRunner] Error starting engine:", error);
+        // Set game over to trigger user feedback
+        setGameOver(true);
       });
 
-    // Clean up on unmount
-    return () => {
-      if (engineRef.current) {
-        console.log("[MonadRunner] Stopping engine on cleanup");
-        engineRef.current.stop();
-        engineRef.current = null;
-      }
-    };
+      // Clean up on unmount
+      return () => {
+        if (engineRef.current) {
+          console.log("[MonadRunner] Stopping engine on cleanup");
+          try {
+            engineRef.current.stop();
+          } catch (e) {
+            console.error("[MonadRunner] Error stopping engine:", e);
+          }
+          engineRef.current = null;
+        }
+      };
+    } catch (error) {
+      console.error("[MonadRunner] Critical error initializing game:", error);
+      setGameOver(true);
+      return () => {};
+    }
   }, [walletAddress]);
 
   const handleRestart = () => {
