@@ -1,0 +1,637 @@
+Permissions (Session Keys)
+With Kernel, you can assign different permissions to different keys. Some of these keys might be owned by the owner(s) of the smart account, and some might be short-lived keys that you share with others to delegate transactions. The latter are also commonly known as "session keys."
+
+To set up permissions for a key, you must answer three questions: who, when, and what.
+
+Who (what key) can perform the action?
+When (under what condition) can the action be performed?
+What is the action anyways?
+These three questions correspond to three types of "permissions plugins":
+
+Signers (who) specify the key and the algorithm (ECDSA, WebAuthn) it uses.
+Policies (when) specify the conditions under which the keys can be used. Some example conditions are:
+Only if interacting with Uniswap
+Only if spending USDC
+Only once a month
+Actions (what) specify the execution function the key uses.
+Composing Permissions
+Kernel is the first smart account to support composable permissions. That is, you can build up fine-grained permissions from putting together signers, policies, and actions. Here's the formula:
+
+
+Permission = 1 signer + N policies + 1 action
+In pseudo-code, this is what it looks like:
+
+
+const account = createKernelAccount({
+  signer: passkeySigner,
+  policies: [
+    onlyUSDC,
+    onlyUniswap,
+    oncePerMonth,
+  ],
+  action,
+})
+Here, the signer will be able to perform action if all policies are met.
+
+Now let's dive into these plugin types.
+
+Permission Plugins
+Because permissions are plugins, you can write your own permissions if the default ones provided by ZeroDev don't meet your needs.
+
+Signers
+Signers specify the keys and the algorithms the keys use. ZeroDev provides signers for:
+
+ECDSA
+WebAuthn (passkeys)
+Multisig
+Policies
+Policies are the conditions under which the keys can be used. ZeroDev provides the following policies:
+
+Sudo policy: you can do anything
+Call policy: you can only call certain contracts or functions (and only with certain params)
+Gas policy: you can only spend up to X amount of gas
+Signature policy: you can only sign certain messages
+Rate limit policy: you can only send UserOps within a given rate limit
+Timestamp policy: you can only send UserOps within certain timeframes
+Actions
+Actions are arbitrary functions that the smart account will delegatecall to. They give you perfect flexibility over the execution logic.
+
+Note that actions are NOT to be confused with the calls you actually want to execute. For example, if you want to interact with Uniswap, that's just the call you want to execute. "Action" here specifically refers to the execution function by which Uniswap is called.
+
+If that's confusing, just forget about actions. Mostly commonly you will only be setting up signers and policies, and the action will default to Kernel's default execute() function, which is enough for most needs.
+
+
+
+
+Tutorial -- Transaction Automation
+In this tutorial, you will learn how to automate transactions for your users using session keys. This is useful when you want to send transactions for your users from your server, for instance.
+
+Refer to this code example while you follow along the tutorial. You can run the example by following instructions of the examples repo.
+
+Installation
+Session keys are enabled through the @zerodev/permissions package. The examples repo already installed this, but normally you would install permissions with:
+
+npm
+yarn
+pnpm
+bun
+
+npm i @zerodev/permissions
+The Architecture of Transaction Automation
+In the typical architecture for transaction automation, there's an "owner" and an "agent":
+
+The "owner" is the entity that controls the user's master key.
+The "agent" is the entity that automates transactions for the owner.
+For instance, your user might be using an embedded wallet (master key) with your frontend, and you might want to automate transactions for your users from your server. In this case, the frontend would be the "owner" and your server would be the "agent."
+
+From a high level, this is how transaction automation works:
+
+The agent creates a session key.
+At this point, the session key has not been approved by the owner.
+The agent sends the "address" of the session key to the owner for approval.
+The owner signs the address and returns the approval (signature) to the agent.
+The agent can now send transactions for users using the approval and the session key.
+Code Flow
+Agent: creating a session key
+From the agent's side, create a ECDSA signer as the session key:
+
+
+const sessionPrivateKey = generatePrivateKey()
+ 
+const sessionKeySigner = await toECDSASigner({
+  signer: privateKeyToAccount(sessionPrivateKey),
+})
+Note that if you do not wish to store the private key of the session key, you could use a remote signer instead:
+
+
+const remoteSigner = await toRemoteSigner({
+    apiKey,
+    mode: RemoteSignerMode.Create
+})
+ 
+const sessionKeySigner = await toECDSASigner({
+  signer: remoteSigner,
+})
+Agent: send session key "address" to the owner
+For the owner to approve the session key, the agent must send the "address" of the session key to the owner. Note that the private key is never sent -- it's only the address which is the public key of the session key that's sent.
+
+To obtain the session key address:
+
+
+const sessionKeyAddress = sessionKeySigner.account.address
+Send this address to the owner.
+
+Owner: approving the session key
+Now, on the owner side, approve the session key with policies:
+
+
+const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer,
+})
+ 
+// Create an "empty account" as the signer -- you only need the public
+// key (address) to do this.
+const emptyAccount = addressToEmptyAccount(sessionKeyAddress)
+const emptySessionKeySigner = await toECDSASigner({ signer: emptyAccount })
+ 
+const permissionPlugin = await toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: emptySessionKeySigner,
+  policies: [
+    // your policies
+  ],
+})
+ 
+const sessionKeyAccount = await createKernelAccount(publicClient, {
+  entryPoint,
+  kernelVersion,
+  plugins: {
+    sudo: ecdsaValidator,
+    regular: permissionPlugin,
+  },
+})
+ 
+const approval = await serializePermissionAccount(sessionKeyAccount)
+Now, send the serialized approval back to the agent.
+
+Agent: using the session key
+When the agent wants to use the session key, first recreate the signer. Presumably, you would've stored the session key somewhere:
+
+
+// Using a stored private key
+const sessionKeySigner = await toECDSASigner({
+  signer: privateKeyToAccount(sessionPrivateKey),
+})
+Or if you were using a remote signer:
+
+
+const remoteSignerWithGet = await toRemoteSigner({
+    apiKey,
+    keyAddress: remoteSignerAddress // you should've stored this
+    mode: RemoteSignerMode.Get
+})
+ 
+const sessionKeySigner = await toECDSASigner({
+  signer: remoteSigner,
+})
+Now create an account object by combining the approval (which you should've stored somewhere) with the sessionKeySigner:
+
+
+const sessionKeyAccount = await deserializePermissionAccount(
+  publicClient,
+  entryPoint,
+  kernelVersion,
+  approval,
+  sessionKeySigner
+)
+Finally, construct a Kernel client as usual:
+
+
+const kernelClient = createKernelAccountClient({
+  account: sessionKeyAccount,
+ 
+  // the other params
+})
+Now you can send transactions with the Kernel client.
+
+Revoking a Session Key
+After a session key has been used, or if it's no longer needed, it's a good security practice to revoke it to ensure it cannot be used for any further transactions. Here's how you can revoke a session key:
+
+First, prepare your environment for the revocation process. This involves creating a "sudo" account capable of performing privileged operations, such as uninstalling plugins.
+
+
+const sudoAccount = await createKernelAccount(publicClient, {
+    plugins: {
+      sudo: ecdsaValidator,
+    },
+  // other params
+});
+ 
+const sudoKernelClient = createKernelAccountClient({
+  account: sudoAccount,
+  // other params
+})
+Now to revoke the session key by uninstalling its associated permission plugin, call uninstallPlugin on sudoKernelClient.
+
+
+const txHash = await sudoKernelClient.uninstallPlugin({
+    plugin: permissionPlugin,
+});
+Creating multiple session keys on multiple chains in one signature
+
+
+CDSA Signer
+The ECDSA signer signs with a single ECDSA key, specifically with the secp256k1 curve, which is the same algorithm that EOAs use.
+
+API
+
+import { toECDSASigner } from "@zerodev/permissions/signers"
+ 
+// Use any Viem account
+const signer = privateKeyToAccount(generatePrivateKey())
+ 
+const ecdsaSigner = await toECDSASigner({
+  signer,
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: ecdsaSigner,
+  policies: [
+    // ...
+  ],
+})
+
+
+On this page
+API
+WebAuthn Signer
+The WebAuthn (passkeys) signer signs with a single passkey. Read the passkeys doc for a more detailed intro to passkeys.
+
+API
+
+import { toWebAuthnKey, toWebAuthnSigner, WebAuthnMode, WebAuthnSignerVersion} from "@zerodev/permissions/signers"
+ 
+const passkeyName = "Key Name"  // any name you want
+const passkeyServerUrl = "..."  // get this from ZeroDev dashboard
+const mode = WebAuthnMode.Register  // can also be "login" if you are using an existing key
+ 
+const webAuthnKey = await toWebAuthnKey({
+  passkeyName,
+  passkeyServerUrl,
+  mode,
+  passkeyServerHeaders: {}
+})
+ 
+const webAuthnSigner = await toWebAuthnSigner(publicClient, {
+  webAuthnKey,
+  webAuthnSignerVersion: WebAuthnSignerVersion.V0_0_2
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: webAuthnSigner,
+  policies: [
+    // ...
+  ],
+})
+For the params:
+
+passkeyName can be any name
+passkeyServerUrl is a passkey server URL. You can get it from the ZeroDev dashboard.
+mode is either register or login, depending on whether you are creating a new key or using an existing key.
+
+
+
+Multisig Signer
+The weighted ECDSA (multisig) signer signs with a collection of ECDSA keys. Each key is weighted, so that the signature will pass as long as enough signers with enough weight have signed.
+
+Read the multisig doc for more details.
+
+API
+
+import { toWeightedECDSASigner } from "@zerodev/permissions/signers"
+ 
+const multisigSigner = await toWeightedECDSASigner(publicClient, {
+  config: {
+      threshold: 100,
+      delay: 0,
+      signers: [
+          { address: signer1.address, weight: 50 },
+          { address: signer2.address, weight: 50 }
+      ]
+  },
+  signers: [signer1, signer2]
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: multisigSigner,
+  policies: [
+    // ...
+  ],
+})
+
+The sudo policy gives full permission to the signer. The signer will be able to send any UserOps and sign any messages.
+
+API
+
+import { toSudoPolicy } from "@zerodev/permissions/policies"
+ 
+const sudoPolicy = toSudoPolicy({})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: someSigner,
+  policies: [
+    sudoPolicy,
+    // ...other policies
+  ],
+})
+
+Call Policy
+The call policy limits the target (either contract or EOA) that the UserOp can interact with. If the target is a contract, then you can further specify the functions the UserOp can interact with, as well as putting constraints on the values of the function arguments.
+
+API
+
+import { ParamCondition, toCallPolicy, CallPolicyVersion } from "@zerodev/permissions/policies"
+ 
+const callPolicy = toCallPolicy({
+  policyVersion: CallPolicyVersion.V0_0_3,
+  permissions: [
+    {
+      // target address
+      target: contractAddress,
+      // Maximum value that can be transferred.  In this case we
+      // set it to zero so that no value transfer is possible.
+      valueLimit: BigInt(0),
+      // Contract abi
+      abi: contractABI,
+      // Function name
+      functionName: "mint",
+      // An array of conditions, each corresponding to an argument for
+      // the function.
+      args: [
+        {
+          condition: ParamCondition.EQUAL,
+          value: value,
+        },
+      ],
+    },
+  ],
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: someSigner,
+  policies: [
+    callPolicy,
+    // ...other policies
+  ],
+})
+target: the target contract to call or address to send ETH to. If this is zeroAddress, then the target can be any contract as long as the ABI matches (or it can be any address if no ABI is specified).
+valueLimit: the maximum value. that can be transmitted.
+abi: the contract ABI
+functionName: the function name
+selector: if you have multiple functions with the same name, you can distinguish them with selector. For example: selector: toFunctionSelector("transfer(uint256, uint256)").
+args: an array of conditions, each corresponding to an argument, in the order that the arguments are laid out. use null to skip an argument.
+operator: this can be EQUAL, GREATER_THAN, LESS_THAN, GREATER_THAN_OR_EQUAL, LESS_THAN_OR_EQUAL, NOT_EQUAL.
+value: the value of the argument to use with the operator. For instance, operator = EQUAL and value = 2 would mean "the argument must be equal to 2".
+operation: whether this is a call or a delegatecall. Defaults to call.
+
+Gas Policy
+The gas policy specifies how much gas the signer can use in total, across all UserOps it sends. It can also enforce that the UserOps must use paymasters, or use a specific paymaster.
+
+API
+
+import { toGasPolicy } from "@zerodev/permissions/policies"
+ 
+// Set a total amount
+const gasPolicy = toGasPolicy({
+  allowed: parseEther('0.1'),
+})
+ 
+// Or enforce that a paymaster must be used
+const gasPolicy = toGasPolicy({
+  enforcePaymaster: true,
+})
+ 
+// Or enforce that a specific paymaster is used
+const gasPolicy = toGasPolicy({
+  allowedPaymaster: "PAYMASTER_ADDRESS",
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: someSigner,
+  policies: [
+    gasPolicy,
+    // ...other policies
+  ],
+})
+toGasPolicy takes one or more of the following arguments:
+
+allowed: an amount, in wei, of the ETH (or whatever native token) that the signer can spend on gas, in total across all UserOps it sends.
+enforcePaymaster: a boolean value. If set to true, enforce that a paymaster must be used.
+allowedPaymaster: a paymaster address. If set, enforce that the specific paymaster is used.
+
+Signature Caller Policy
+The signature caller policy specifies a list of addresses that are allowed to validate messages signed by the signer.
+
+This is useful when you want the signer to sign messages for a set of particular protocols only. For example, if you want to create a signer that can only sign USDC permits, then you can use this policy to ensure that only the USDC contract can validate its messages.
+
+API
+
+import { toSignatureCallerPolicy } from "@zerodev/permissions/policies"
+ 
+const signaturePolicy = toSignatureCallerPolicy({
+  allowedCallers: [address1, address2]
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: someSigner,
+  policies: [
+    signaturePolicy,
+    // ...other policies
+  ],
+})
+allowedCallers is a list of addresses that are allowed to validate messages signed by the signer.
+
+ate Limit Policy
+The rate limit policy specifies the frequency at which the signer is allowed to send UserOps.
+
+We have two types of rate limit policies:
+
+Rate limits with no reset: send one UserOp per interval, for up to count times.
+Rate limits with reset: send count UserOps within an interval, for an indefinite number of intervals.
+Rate limit with no reset
+Send one UserOp per interval, for up to count times. Each UserOp call must have at least an interval of time between it and the next call.
+
+API
+
+import { toRateLimitPolicy } from "@zerodev/permissions/policies"
+ 
+// In this example, the signer can send one UserOp per month
+const rateLimitPolicy = toRateLimitPolicy({
+  count: 1,
+  interval: 60 * 60 * 24 * 30,  // one month in seconds
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: someSigner,
+  policies: [
+    rateLimitPolicy,
+    // ...other policies
+  ],
+})
+Arguments to toRateLimitPolicy:
+
+count: the number of intervals.
+(optional) interval: the length of an interval.
+(optional) startAt: the starting UNIX timestamp for when the rate limit should take effect. Before that, the signer cannot send any UserOps.
+Rate limit with reset
+Send count UserOps within an interval, for an indefinite number of intervals.
+
+The Rate Limit Policy with reset allows you to define a recurring allowance of UserOps that refreshes after each interval period. This is useful for creating recurring permissions that automatically renew, such as monthly subscription payments or regular administrative actions.
+
+API
+Unlike the standard Rate Limit Policy which counts down a total number of allowed operations, the reset version gives the signer a fresh allocation of operations after each interval passes.
+
+
+import { toRateLimitPolicy, RATE_LIMIT_POLICY_WITH_RESET_CONTRACT } from "@zerodev/permissions/policies"
+ 
+// In this example, the signer can send one UserOp per month
+const rateLimitPolicy = toRateLimitPolicy({
+  count: 1,
+  interval: 60 * 60 * 24 * 30,  // one month in seconds
+})
+ 
+// only difference from non-reset is using RATE_LIMIT_POLICY_WITH_RESET_CONTRACT for policyAddress
+const validator = toPermissionValidator(publicClient, {
+  policyAddress : RATE_LIMIT_POLICY_WITH_RESET_CONTRACT,
+  entryPoint,
+  kernelVersion,
+  signer: someSigner,
+  policies: [
+    rateLimitPolicy,
+    // ...other policies
+  ],
+})
+Examples
+If you want to do a monthly payment for 2 years (no reset after two years), the parameters will be:
+
+
+  count : 24,
+  interval : 60 * 60 * 24 * 30 // 30 days for month
+  startAt : <Current timestamp in UNIX timestamp format>
+If you want to do a monthly payment indefinitely, the parameters will be:
+
+
+  policyAddress : RATE_LIMIT_POLICY_WITH_RESET_CONTRACT,
+  count : 1,
+  interval : 60 * 60 * 24 * 30 // 30 days for month
+  startAt : 0 or undefined
+Notes
+We are aware that the semantics of count and interval changes completely between the no reset version and the reset version and it's very confusing; this is technical debt we intend to clean up.
+The reset version technically violates ERC-4337 storage rules since it needs to access block.timestamp, so it won't work with all bundler, but it's known to work with UltraRelay and Pimlico.
+
+
+On this page
+API
+Timestamp Policy
+The timestamp policy specifies the start and end time for when the signer is valid.
+
+API
+
+import { toTimestampPolicy } from "@zerodev/permissions/policies"
+ 
+// In this example, the signer can send one UserOp per month
+const timestampPolicy = toTimestampPolicy({
+  validAfter: 1704085200,  // January 1, 2024 12:00 AM UTC
+  validUntil: 1735707599,  // December 31, 2024 11:59 PM UTC
+})
+ 
+const validator = toPermissionValidator(publicClient, {
+  entryPoint,
+  kernelVersion,
+  signer: someSigner,
+  policies: [
+    timestampPolicy,
+    // ...other policies
+  ],
+})
+Arguments to toTimestampPolicy:
+
+validAfter: the time after which the signer becomes valid. If not specified, the signer is immediately valid.
+validUntil: the time before which the signer is valid. If not specified, the signer never expires.
+
+Use an EOA with ZeroDev
+An Externally Owned Account (EOA) is a standard Ethereum account operated via a private key. It's commonly used in wallets like MetaMask. ZeroDev is compatible with EOAs as signers, and the method of integrating an EOA varies based on your dApp's connection approach.
+
+Integration Methods
+We'll explore three methods to integrate a signer with ZeroDev: using an EIP-1193 provider, using a viem WalletClient, and employing a Local Account.
+
+EIP-1193 Provider Integration
+EIP-1193 is a standard interface for Ethereum providers, such as MetaMask or hardware wallets, where the key material is hosted externally rather than on the local client. ZeroDev supports creating a signer from any provider that implements this interface.
+
+
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+import { KERNEL_V3_1, getEntryPoint } from "@zerodev/sdk/constants"
+import { createPublicClient } from "viem";
+import { polygonAmoy } from 'viem/chains';
+ 
+const publicClient = createPublicClient({
+  // Use your own RPC provider (e.g. Infura/Alchemy).
+  transport: http('https://rpc-amoy.polygon.technology'),
+  chain: polygonAmoy,
+})
+ 
+// Pass your `window.ethereum` to the validator
+const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+  signer: window.ethereum,
+  entryPoint: getEntryPoint("0.7"),
+  kernelVersion: KERNEL_V3_1
+})
+ 
+// You can now use this ECDSA Validator to create a Kernel account
+Viem Wallet Client Integration
+A Wallet Client is an interface to interact with Ethereum Account(s) and provides the ability to retrieve accounts, execute transactions, sign messages, etc through Wallet Actions.
+
+In this example, we assume that you have access to a WalletClient object.
+
+
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+import { KERNEL_V3_1, getEntryPoint } from "@zerodev/sdk/constants"
+ 
+const publicClient = createPublicClient({
+  // Use your own RPC provider (e.g. Infura/Alchemy).
+  transport: http('https://rpc-amoy.polygon.technology'),
+  chain
+})
+ 
+// Pass your `walletClient` to the validator
+const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+  signer: walletClient,
+  entryPoint: getEntryPoint("0.7"),
+  kernelVersion: KERNEL_V3_1
+})
+ 
+// You can now use this ECDSA Validator to create a Kernel account
+Local Account
+A Local Account refers to an EOA where the private key is directly accessible on the client. In this example we assume you have access to the private key locally.
+
+
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+import { KERNEL_V3_1, getEntryPoint } from "@zerodev/sdk/constants"
+import { privateKeyToAccount } from "viem/accounts"
+import { Hex } from "viem"
+ 
+// Create a signer
+const smartAccountSigner = privateKeyToAccount(process.env.PRIVATE_KEY as Hex)
+ 
+const publicClient = createPublicClient({
+  transport: http('https://rpc-amoy.polygon.technology'),
+  chain
+})
+ 
+// Pass your `smartAccountSigner` to the validator
+const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+  signer: smartAccountSigner,
+  entryPoint: getEntryPoint("0.7"),
+  kernelVersion: KERNEL_V3_1
+})
+ 
+// You can now use this ECDSA Validator to create a Kernel account

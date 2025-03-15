@@ -12,7 +12,8 @@ import { Header } from "~~/components/Header";
 import { BlockieAvatar } from "~~/components/scaffold-eth";
 import { useInitializeNativeCurrencyPrice } from "~~/hooks/scaffold-eth";
 import { wagmiConfig } from "~~/services/web3/wagmiConfig";
-import { AAProvider } from "~~/providers/AAProvider";
+import { SessionProvider } from "~~/providers/SessionProvider";
+import SessionBanner from "~~/components/SessionBanner";
 
 const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
   useInitializeNativeCurrencyPrice();
@@ -20,6 +21,7 @@ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
   return (
     <>
       <div className={`flex flex-col min-h-screen `}>
+        <SessionBanner />
         <Header />
         <main className="relative flex flex-col flex-1">{children}</main>
         <Footer />
@@ -54,9 +56,9 @@ export const ScaffoldEthAppWithProviders = ({ children }: { children: React.Reac
           avatar={BlockieAvatar}
           theme={mounted ? (isDarkMode ? darkTheme() : lightTheme()) : lightTheme()}
         >
-          <AAProvider>
+          <SessionProvider>
             <ScaffoldEthApp>{children}</ScaffoldEthApp>
-          </AAProvider>
+          </SessionProvider>
         </RainbowKitProvider>
       </QueryClientProvider>
     </WagmiProvider>

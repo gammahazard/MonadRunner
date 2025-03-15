@@ -7,7 +7,7 @@ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
 const deployedContracts = {
   10143: {
     MonadRunnerGame: {
-      address: "0x050A8691b3D7d31917bF1Bd7934a114B31282122",
+      address: "0x775dc8Be07165261E1ef6371854F600bb01B24E6",
       abi: [
         {
           inputs: [],

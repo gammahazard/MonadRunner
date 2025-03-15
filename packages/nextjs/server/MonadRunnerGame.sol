@@ -127,30 +127,6 @@ contract MonadRunnerGame {
         playerAddresses.push(msg.sender);
         emit PlayerRegistered(msg.sender, username);
     }
-    
-    /**
-     * Anyone can register any player - no authentication required
-     * This allows self-registration without a relayer
-     */
-    function registerPlayerNoAuth(address playerAddress, string calldata username) external {
-        if (players[playerAddress].exists) revert PlayerAlreadyRegistered();
-        
-        uint256 len = bytes(username).length;
-        if (len == 0) revert UsernameEmpty();
-        if (len > MAX_USERNAME_LENGTH) revert UsernameTooLong();
-
-        // Initialize all fields directly to save gas
-        players[playerAddress] = Player({
-            username: username,
-            highScore: 0,
-            timesPlayed: 0,
-            lastPlayed: 0,
-            exists: true
-        });
-        
-        playerAddresses.push(playerAddress);
-        emit PlayerRegistered(playerAddress, username);
-    }
 
     function updateUsername(string calldata newUsername) external onlyRegisteredPlayer {
         uint256 len = bytes(newUsername).length;
@@ -159,22 +135,6 @@ contract MonadRunnerGame {
         
         players[msg.sender].username = newUsername;
         emit UsernameChanged(msg.sender, newUsername);
-    }
-    
-    /**
-     * Anyone can update any player's username - no authentication required
-     * This allows username updates without a relayer
-     */
-    function updateUsernameNoAuth(address playerAddress, string calldata newUsername) external {
-        // Check that the player exists
-        if (!players[playerAddress].exists) revert PlayerDoesNotExist();
-        
-        uint256 len = bytes(newUsername).length;
-        if (len == 0) revert UsernameEmpty();
-        if (len > MAX_USERNAME_LENGTH) revert UsernameTooLong();
-        
-        players[playerAddress].username = newUsername;
-        emit UsernameChanged(playerAddress, newUsername);
     }
 
     function registerSmartAccount(address smartAccount) external onlyRegisteredPlayer {
@@ -261,44 +221,6 @@ contract MonadRunnerGame {
         
         emit ScoreSubmitted(msg.sender, score, block.timestamp, replayHash);
         emit ReplayDataStored(msg.sender, replayHash);
-    }
-    
-    /**
-     * Everyone can submit a score for themselves regardless of who the msg.sender is
-     * This allows any player to submit scores without requiring a relayer
-     */
-    function submitScoreNoAuth(address playerAddress, uint256 score, bytes32 replayHash) external {
-        // Check that the player exists
-        if (!players[playerAddress].exists) revert PlayerDoesNotExist();
-        
-        // Gas optimization: Use storage pointer
-        Player storage player = players[playerAddress];
-        
-        // Unchecked math for gas optimization when overflow is impossible
-        unchecked {
-            player.timesPlayed++;
-        }
-        
-        player.lastPlayed = block.timestamp;
-        
-        // Only update highScore if needed
-        if (score > player.highScore) {
-            player.highScore = score;
-        }
-        
-        GameScore memory newScore = GameScore({
-            playerAddress: playerAddress,
-            score: score,
-            timestamp: block.timestamp,
-            replayHash: replayHash
-        });
-        
-        replayExists[replayHash] = true;
-        _addToPlayerScoreHistory(playerAddress, newScore);
-        _updateLeaderboard(newScore);
-        
-        emit ScoreSubmitted(playerAddress, score, block.timestamp, replayHash);
-        emit ReplayDataStored(playerAddress, replayHash);
     }
 
     /**
